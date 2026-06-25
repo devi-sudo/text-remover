@@ -13,22 +13,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ==========================================
-# 🟢 RENDER FIX: Auto-download Tesseract Binary
-# ==========================================
-if os.name != 'nt':  # Linux (Render)
-    TESSERACT_PATH = os.path.join(os.getcwd(), "tesseract")
-    if not os.path.exists(TESSERACT_PATH):
-        print("📥 Downloading Tesseract binary for Linux...")
-        url = "https://github.com/tesseract-ocr/tesseract/releases/download/5.3.3/tesseract-5.3.3-linux-x86_64"
-        urllib.request.urlretrieve(url, TESSERACT_PATH)
-        os.chmod(TESSERACT_PATH, stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        print("✅ Tesseract binary downloaded and made executable!")
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-else:  # Windows
+if os.name == 'nt':  # Windows
     pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
-# ==========================================
+else:  # Linux (Render / Docker)
+    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 
-# ==========================================
 # GLOBAL VARIABLES
 # ==========================================
 user_brands = {}
