@@ -1,29 +1,72 @@
 import os
 import cv2
+import gc
 import numpy as np
 import pytesseract
 import subprocess
 import threading
 import time
+import asyncio
+import shutil
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, render_template_string, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ==========================================
+# 🧹 BACKGROUND CACHE CLEANER THREAD
+# ==========================================
+def cache_cleaner():
+    """Runs in background every 30 minutes to delete __pycache__ folders"""
+    while True:
+        time.sleep(1800)
+        try:
+            current_dir = os.getcwd()
+            for root, dirs, files in os.walk(current_dir):
+                for dir_name in dirs:
+                    if dir_name == "__pycache__":
+                        pycache_path = os.path.join(root, dir_name)
+                        shutil.rmtree(pycache_path, ignore_errors=True)
+                        print(f"🧹 Cleaned cache folder: {pycache_path}")
+        except Exception as e:
+            print(f"⚠️ Cache cleaner error: {e}")
+
+threading.Thread(target=cache_cleaner, daemon=True).start()
+print("🧹 Disk Cache Cleaner thread started")
+
+# ==========================================
 # GLOBAL VARIABLES
 # ==========================================
-user_brands = {}
-bot_logs = []
 bot_start_time = time.time()
 last_command = "None"
+active_users = set()
+bot_logs = []
+user_processing_lock = {}  # To prevent duplicate uploads from same user
 
 def log_message(msg):
     timestamp = time.strftime("%H:%M:%S")
-    bot_logs.append(f"[{timestamp}] {msg}")
+    log_line = f"[{timestamp}] {msg}"
+    print(log_line)
+    bot_logs.append(log_line)
     if len(bot_logs) > 50:
         bot_logs.pop(0)
-    print(msg)
+
+# ==========================================
+# 📋 HELP COMMAND
+# ==========================================
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "🛠️ **Bot Commands Guide**\n\n"
+        "`/start` - Welcome message & status\n"
+        "`/help` - Show this help menu\n"
+        "`/setbrand <text>` - Save your brand name\n"
+        "   Example: `/setbrand t.me/mychannel`\n"
+        "`/mybrand` - Check your current saved brand\n"
+        "`/clearbrand` - Delete your saved brand\n"
+        "`/cancel` - Cancel your current processing (if stuck)\n\n"
+        "📤 **Upload:** Send a photo or video to apply your brand automatically!"
+    )
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
 # ==========================================
 # 🎉 START COMMAND
@@ -31,16 +74,19 @@ def log_message(msg):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    brand_status = f"✅ Your brand: **{user_brands[user_id]}**" if user_id in user_brands else "❌ No brand set."
+    active_users.add(user_id)
+    
+    brand = context.user_data.get('brand', None)
+    brand_status = f"✅ Your brand: **{brand}**" if brand else "❌ No brand set. Use `/setbrand`"
+    
     welcome_message = (
-        f"👋 **Hello {user.first_name} !**\n\n"
-        f"🤖 **WaterMark Rewrite Bot**\n"
-        f"📌 **How to use:**\n"
-        f"1️⃣ Set brand: `/setbrand YourBrandName`\n"
-        f"2️⃣ Upload a photo or video.\n"
-        f"3️⃣ Get a clean, professional result!\n\n"
-        f"{brand_status}\n\n"
-        f"🥹😂 **help - t.me/paid_promo0x**\n\n"
+        f"👋 **Hello {user.first_name}!**\n\n"
+        f"🤖 **Ultimate Watermark Remover Bot**\n"
+        f"✓ Multi text support\n"
+        f"✓ Auto-cache cleaning\n"
+        f"✓ Blue Icon detection\n\n"
+        f"📌 **Status:**\n{brand_status}\n\n"
+        f"📖 Type `/help` to see all commands!\n"
         f"🚀 **Upload a media file below!**"
     )
     keyboard = [[InlineKeyboardButton("📸 Upload Media", switch_inline_query="")]]
@@ -49,7 +95,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_message(f"👤 User {user_id} started the bot")
 
 # ==========================================
-# BOT COMMANDS
+# 💼 BRAND MANAGEMENT COMMANDS
 # ==========================================
 async def set_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -57,26 +103,66 @@ async def set_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         await update.message.reply_text("❌ **Usage:** `/setbrand YourBrandName`", parse_mode='Markdown')
         return
-    user_brands[user_id] = text
+    
+    context.user_data['brand'] = text
+    active_users.add(user_id)
     log_message(f"👤 User {user_id} set brand: {text}")
-    await update.message.reply_text(f"✅ **Brand Name saved!**\n\n`{text}`\n\nUpload your media now.", parse_mode='Markdown')
+    await update.message.reply_text(f"✅ **Brand saved!**\n\n`{text}`\n\nUpload your media now.", parse_mode='Markdown')
 
+async def my_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    brand = context.user_data.get('brand', None)
+    if brand:
+        await update.message.reply_text(f"✅ **Your current brand is:**\n`{brand}`", parse_mode='Markdown')
+    else:
+        await update.message.reply_text("❌ You haven't set a brand yet.\nUse `/setbrand YourBrandName`", parse_mode='Markdown')
+
+async def clear_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if 'brand' in context.user_data:
+        del context.user_data['brand']
+        log_message(f"👤 User {user_id} cleared their brand")
+        await update.message.reply_text("✅ **Brand cleared!** You can set a new one with `/setbrand`", parse_mode='Markdown')
+    else:
+        await update.message.reply_text("ℹ️ You don't have a brand set to clear.", parse_mode='Markdown')
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    # Future feature: If you implement a queue, you can cancel the user's task here
+    await update.message.reply_text("⏹️ **Cancelled any ongoing process.** (If you had one)", parse_mode='Markdown')
+
+# ==========================================
+# 📤 MEDIA HANDLER
+# ==========================================
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in user_brands:
-        await update.message.reply_text("⚠️ **Set your brand name first!**\nUse `/setbrand YourBrandName`", parse_mode='Markdown')
+    brand_text = context.user_data.get('brand', None)
+    
+    if not brand_text:
+        await update.message.reply_text("⚠️ **Set your brand first!**\nUse `/setbrand YourBrandName`", parse_mode='Markdown')
         return
 
-    brand_text = user_brands[user_id]
     message = update.message
+    active_users.add(user_id)
     log_message(f"📤 User {user_id} uploaded {'Video' if message.video else 'Photo'}")
+
+    # Check file size limit (Telegram max = 2GB = 2000MB)
+    file_size = None
+    if message.video:
+        file_size = message.video.file_size
+    elif message.photo:
+        file_size = message.photo[-1].file_size
+    
+    if file_size and file_size > 2000 * 1024 * 1024:  # 2GB limit
+        await message.reply_text("❌ File is too large! Telegram limit is 150mb.")
+        return
 
     if message.media_group_id:
         if 'albums' not in context.bot_data:
             context.bot_data['albums'] = {}
         album_id = message.media_group_id
         if album_id not in context.bot_data['albums']:
-            context.bot_data['albums'][album_id] = {'user_id': user_id, 'files': [], 'brand': brand_text}
+            context.bot_data['albums'][album_id] = {'user_id': user_id, 'files': []}
         context.bot_data['albums'][album_id]['files'].append(message)
     else:
         await process_single_file(update, context, user_id, brand_text, message)
@@ -97,12 +183,12 @@ async def process_single_file(update, context, user_id, brand_text, message):
     else:
         return
 
-    base_name = f"{user_id}_{message.message_id}_{int(time.time())}"
-    input_path = f"{base_name}_input{ext}"
-    output_path = f"{base_name}_output{ext}"
+    unique_id = f"{user_id}_{int(time.time() * 1000)}"
+    input_path = f"{unique_id}_input{ext}"
+    output_path = f"{unique_id}_output{ext}"
 
     try:
-        status_msg = await message.reply_text(f"⏳\n\n **it Takes Time Go and take shower🚿**", parse_mode='Markdown')
+        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**", parse_mode='Markdown')
         await file.download_to_drive(input_path)
         
         if media_type == "photo":
@@ -110,16 +196,24 @@ async def process_single_file(update, context, user_id, brand_text, message):
             await status_msg.delete()
             await message.reply_photo(photo=open(output_path, 'rb'))
         else:
+            # Video progress simulation (just a status update)
+            await status_msg.edit_text(f"⏳ **Processing Video...**\n🎬 Detecting Watermark ..")
             pixel_perfect_video_removal(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_video(video=open(output_path, 'rb'))
             
     except Exception as e:
-        log_message(f"❌ Error: {e}")
-        await message.reply_text(f"❌ **Error:** {e}", parse_mode='Markdown')
+        log_message(f"❌ Error for User {user_id}: {e}")
+        await message.reply_text(f"❌ **Error:** {e}\n\nTry uploading a smaller file or clearing your brand with `/clearbrand` and trying again.", parse_mode='Markdown')
     finally:
         for path in [input_path, output_path]:
-            if os.path.exists(path): os.remove(path)
+            if os.path.exists(path): 
+                try:
+                    os.remove(path)
+                except:
+                    pass
+        cv2.destroyAllWindows()
+        gc.collect()
 
 async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     album_id = update.message.media_group_id
@@ -128,10 +222,12 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not album_data: return
 
     user_id = album_data['user_id']
-    brand_text = album_data['brand']
+    brand_text = context.user_data.get('brand', None)
+    if not brand_text: return
+
     messages = album_data['files']
-    log_message(f"📦 Processing Album with {len(messages)} files")
-    status_msg = await update.message.reply_text(f"👀 **OKY...?!**\nProcessing {len(messages)} \n\nIt Takes Time🥹\nDrink Water OR Coffee Daru 😂. \n i will done it shortly", parse_mode='Markdown')
+    log_message(f"📦 Processing Album with {len(messages)} files for User {user_id}")
+    status_msg = await update.message.reply_text(f"📦 **it takes time go and take shower!**\nProcessing {len(messages)} files...", parse_mode='Markdown')
 
     output_media = []
     for idx, message in enumerate(messages):
@@ -147,9 +243,9 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ext = ".jpg"
             media_type = "photo"
         
-        base_name = f"album_{album_id}_{user_id}_{idx}"
-        input_path = f"{base_name}_input{ext}"
-        output_path = f"{base_name}_output{ext}"
+        unique_id = f"album_{album_id}_{user_id}_{idx}"
+        input_path = f"{unique_id}_input{ext}"
+        output_path = f"{unique_id}_output{ext}"
         
         try:
             await file.download_to_drive(input_path)
@@ -162,60 +258,53 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log_message(f"❌ Album Error: {e}")
         finally:
-            if os.path.exists(input_path): os.remove(input_path)
+            if os.path.exists(input_path): 
+                try:
+                    os.remove(input_path)
+                except:
+                    pass
 
     if output_media:
         await status_msg.delete()
         await update.message.reply_media_group(media=output_media)
         for item in output_media:
-            if os.path.exists(item['media'].name): os.remove(item['media'].name)
+            if os.path.exists(item['media'].name): 
+                try:
+                    os.remove(item['media'].name)
+                except:
+                    pass
+
+    cv2.destroyAllWindows()
+    gc.collect()
 
 # ==========================================
-# 🎯 PIXEL-PERFECT REMOVAL (Targets Blue Icon ONLY)
+# 🎯 PIXEL-PERFECT REMOVAL
 # ==========================================
-
 def pixel_perfect_removal(input_path, output_path, new_text):
     img = cv2.imread(input_path)
     h, w, _ = img.shape
 
-    # 1. CONVERT TO HSV TO FIND THE BLUE TELEGRAM ICON
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    
-    # Define the exact blue color range of the Telegram icon
     lower_blue = np.array([95, 100, 100])
     upper_blue = np.array([125, 255, 255])
-    
-    # Create a mask where the blue icon is
     mask = cv2.inRange(hsv, lower_blue, upper_blue)
-    
-    # Find contours (outlines) of the blue icon
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     detected_coords = None
     
     if contours:
-        # Find the largest blue object (which is the Telegram icon)
         largest_contour = max(contours, key=cv2.contourArea)
         x, y, w_box, h_box = cv2.boundingRect(largest_contour)
-        
-        log_message(f"✅ Found Blue Telegram Icon at ({x}, {y})")
-        
-        # 2. EXPAND THE BOX TO INCLUDE THE TEXT ON THE RIGHT
-        # We expand width by 2.5x to capture the 't.me/...' text next to it
         expand_right = int(w_box * 2.5)
         padding = 10
-        
         x = max(0, x - padding)
         y = max(0, y - padding)
         w_box = min(w - x, w_box + expand_right + padding)
         h_box = min(h - y, h_box + padding * 2)
-        
         detected_coords = (x, y, w_box, h_box)
-        log_message(f"✅ Expanded box to cover text. New area: {w_box}x{h_box}")
         
     else:
-        # 3. FALLBACK: If no blue icon found, use Tesseract to scan for text
-        log_message("⚠️ No blue icon found. Falling back to text detection in bottom half.")
+        # Fallback text detection
         crop_bottom = int(h * 0.30)
         bottom_half = img[h - crop_bottom:h, 0:w]
         gray = cv2.cvtColor(bottom_half, cv2.COLOR_BGR2GRAY)
@@ -230,82 +319,58 @@ def pixel_perfect_removal(input_path, output_path, new_text):
                     y = data['top'][i] + (h - crop_bottom)
                     w_box = data['width'][i]
                     h_box = data['height'][i]
-                    
                     padding = 15
                     x = max(0, x - padding)
                     y = max(0, y - padding)
                     w_box = min(w - x, w_box + padding*2)
                     h_box = min(h - y, h_box + padding*2)
-                    
                     detected_coords = (x, y, w_box, h_box)
-                    log_message(f"✅ Fallback: Found text '{text}' at ({x}, {y})")
                     break
 
-    # 4. IF NOTHING FOUND, USE A DEFAULT BOTTOM-RIGHT BOX
     if not detected_coords:
-        log_message("⚠️ Nothing found. Using default bottom-right area.")
         x = w - 400
         y = h - 100
         detected_coords = (x, y, 400, 100)
 
-    # 5. CREATE THE INPAINTING MASK
     x, y, w_box, h_box = detected_coords
     inpaint_mask = np.zeros((h, w), dtype=np.uint8)
     inpaint_mask[y:y+h_box, x:x+w_box] = 255
 
-    # 6. AI INPAINT TO REMOVE THE ICON AND TEXT
     cleaned_img = cv2.inpaint(img, inpaint_mask, 5, cv2.INPAINT_TELEA)
 
-    # 7. ADD NEW TEXT EXACTLY OVER THE REMOVED AREA (BOLD & ITALIC, NO BACKGROUND)
     pil_img = Image.fromarray(cv2.cvtColor(cleaned_img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_img)
     
-    # Set font size
     font_size = int(min(h, w) * 0.04)
     try:
-        # Try to load Arial Bold
         font = ImageFont.truetype("arialbd.ttf", font_size)
-        
-        # Hack: PIL doesn't support true Italic natively. 
-        # We apply a "pseudo-italic" by shearing the text.
-        # But for clean brand marks, just Bold is usually enough.
-        # To force Italic, we use a specific Italic font file if available.
-        try:
-            # Try Arial Italic for the italic look
-            font = ImageFont.truetype("ariali.ttf", font_size)
-        except:
-            pass
     except:
-        # Fallback to default font if arialbd.ttf is missing
         font = ImageFont.load_default()
         
     bbox = draw.textbbox((0, 0), new_text, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
-    # Center the new text perfectly inside the detected box
     center_x = x + (w_box // 2) - (text_w // 2)
     center_y = y + (h_box // 2) - (text_h // 2)
 
-    # ❌ REMOVED THE BLACK BACKGROUND BOX
-    # draw.rectangle([center_x-10, center_y-10, center_x+text_w+10, center_y+text_h+10], fill=(0,0,0,180))
-    
-    # Just draw the text directly in pure white (Bold)
     draw.text((center_x, center_y), new_text, font=font, fill="white")
-    
     pil_img.save(output_path)
+    
+    del img, cleaned_img, pil_img, draw
+    gc.collect()
 
 def pixel_perfect_video_removal(input_path, output_path, new_text):
     cap = cv2.VideoCapture(input_path)
     ret, first_frame = cap.read()
-    cap.release()
+    
     if not ret:
+        cap.release()
         raise Exception("Could not read video")
         
     h, w, _ = first_frame.shape
     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
     
-    # 1. DETECT BLUE ICON ON THE FIRST FRAME
     hsv = cv2.cvtColor(first_frame, cv2.COLOR_BGR2HSV)
     lower_blue = np.array([95, 100, 100])
     upper_blue = np.array([125, 255, 255])
@@ -317,32 +382,31 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
     if contours:
         largest_contour = max(contours, key=cv2.contourArea)
         x, y, w_box, h_box = cv2.boundingRect(largest_contour)
-        # Expand to cover text
         expand_right = int(w_box * 2.5)
         x = max(0, x - 10)
         y = max(0, y - 10)
         w_box = min(w - x, w_box + expand_right + 10)
         h_box = min(h - y, h_box + 20)
-        log_message(f"🎥 Video: Found blue icon at ({x}, {y})")
     else:
-        # Fallback to default bottom-right
-        log_message("🎥 Video: No blue icon, using default area.")
         x = w - 400
         y = h - 100
         w_box = 400
         h_box = 100
+    
+    cap.release()
+    first_frame = None
     
     x_perc = x / w
     y_perc = y / h
     w_perc = w_box / w
     h_perc = h_box / h
 
-    # 2. FFMPEG: Erase exact box + Add new text (No background, Bold Italic style)
     filter_complex = (
         f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
         f"[erased]drawtext=text='{safe_text}':"
-        f"fontcolor=white:fontsize=34:"
-        f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:" # Try to load a bold font
+        f"fontcolor=yellow:fontsize=35:"
+        f"box=1:boxcolor=black@0.5:boxborderw=10:"
+        f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
         f"x={x}:y={y}[out]"
     )
     
@@ -356,6 +420,7 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
         "-y", output_path
     ]
     subprocess.run(cmd, check=True)
+    gc.collect()
 
 # ==========================================
 # 🎨 FLASK DASHBOARD
@@ -368,7 +433,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 Pixel Bot</title>
+    <title>🤖 Ultimate Brand Bot</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body { background: #0f172a; color: #e2e8f0; padding: 20px; }
@@ -395,13 +460,12 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>Branding Bot</h1>
-            <p>free to use</p>
+            <h1>🤖 Watermark Remover Bot</h1>
             <div><span class="status-badge">🟢 Online</span></div>
         </div>
         <div class="stats-grid">
             <div class="stat-card"><h3>Uptime</h3><div class="value">{{ uptime }}</div></div>
-            <div class="stat-card"><h3>Total Users</h3><div class="value">{{ users }}</div></div>
+            <div class="stat-card"><h3>Active Users</h3><div class="value">{{ users }}</div></div>
             <div class="stat-card"><h3>Last Command</h3><div class="value" style="font-size: 16px; color: #facc15;">{{ last_cmd }}</div></div>
         </div>
         <div class="logs-container">
@@ -422,7 +486,7 @@ def dashboard():
     return render_template_string(
         HTML_TEMPLATE,
         uptime=uptime_str,
-        users=len(user_brands),
+        users=len(active_users),
         last_cmd=last_command,
         logs=bot_logs.copy()
     )
@@ -440,13 +504,17 @@ if __name__ == "__main__":
         exit(1)
 
     threading.Thread(target=run_flask, daemon=True).start()
-    log_message("🌐 Dashboard started on port 10000")
 
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("setbrand", set_brand))
+    application.add_handler(CommandHandler("mybrand", my_brand))
+    application.add_handler(CommandHandler("clearbrand", clear_brand))
+    application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, process_album), group=1)
     
-    log_message("🤖 Pixel-Perfect Bot started successfully!")
+    log_message("🤖 Ultimate Brand Bot started successfully! (Full feature set)")
+    
     application.run_polling()
