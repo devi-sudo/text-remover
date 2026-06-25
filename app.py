@@ -1,6 +1,7 @@
 import os
 import cv2
 import numpy as np
+import pytesseract
 import subprocess
 import threading
 import time
@@ -33,12 +34,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     brand_status = f"✅ Your brand: **{user_brands[user_id]}**" if user_id in user_brands else "❌ No brand set."
     welcome_message = (
         f"👋 **Hello {user.first_name}!**\n\n"
-        f"🤖 **Studio Brand Bot**\n"
-        f"I erase the bottom-right watermark completely, and place your brand in the center.\n\n"
+        f"🤖 **Pixel-Perfect Brand Bot**\n"
+        f"I detect the Blue Telegram Icon, remove it, and place your brand (Bold & Italic)!\n\n"
         f"📌 **How to use:**\n"
         f"1️⃣ Set brand: `/setbrand YourBrandName`\n"
         f"2️⃣ Upload a photo or video.\n"
-        f"3️⃣ Get a studio-clean result!\n\n"
+        f"3️⃣ Get a clean, professional result!\n\n"
         f"{brand_status}\n\n"
         f"🚀 **Upload a media file below!**"
     )
@@ -101,15 +102,15 @@ async def process_single_file(update, context, user_id, brand_text, message):
     output_path = f"{base_name}_output{ext}"
 
     try:
-        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**\n🧹 Erasing bottom-right watermark...", parse_mode='Markdown')
+        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**\n🔍 Detecting Blue Icon...", parse_mode='Markdown')
         await file.download_to_drive(input_path)
         
         if media_type == "photo":
-            studio_erase_and_center(input_path, output_path, brand_text)
+            pixel_perfect_removal(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_photo(photo=open(output_path, 'rb'))
         else:
-            studio_video_erase_and_center(input_path, output_path, brand_text)
+            pixel_perfect_video_removal(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_video(video=open(output_path, 'rb'))
             
@@ -153,10 +154,10 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await file.download_to_drive(input_path)
             if media_type == "photo":
-                studio_erase_and_center(input_path, output_path, brand_text)
+                pixel_perfect_removal(input_path, output_path, brand_text)
                 output_media.append({'type': 'photo', 'media': open(output_path, 'rb')})
             else:
-                studio_video_erase_and_center(input_path, output_path, brand_text)
+                pixel_perfect_video_removal(input_path, output_path, brand_text)
                 output_media.append({'type': 'video', 'media': open(output_path, 'rb')})
         except Exception as e:
             log_message(f"❌ Album Error: {e}")
@@ -170,78 +171,179 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(item['media'].name): os.remove(item['media'].name)
 
 # ==========================================
-# 🎨 STUDIO-GRADE TEXT REMOVAL
+# 🎯 PIXEL-PERFECT REMOVAL (Targets Blue Icon ONLY)
 # ==========================================
 
-def studio_erase_and_center(input_path, output_path, new_text):
-    """
-    Removes the ENTIRE bottom-right corner using AI Inpainting.
-    Then places the brand text perfectly in the CENTER of the screen.
-    """
+def pixel_perfect_removal(input_path, output_path, new_text):
     img = cv2.imread(input_path)
     h, w, _ = img.shape
 
-    # 1. Target the entire bottom-right 15% of the image
-    crop_y = int(h * 0.85)  # Start 85% down
-    crop_x = int(w * 0.80)  # Start 80% right
-    box_h = h - crop_y
-    box_w = w - crop_x
+    # 1. CONVERT TO HSV TO FIND THE BLUE TELEGRAM ICON
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    
+    # Define the exact blue color range of the Telegram icon
+    lower_blue = np.array([95, 100, 100])
+    upper_blue = np.array([125, 255, 255])
+    
+    # Create a mask where the blue icon is
+    mask = cv2.inRange(hsv, lower_blue, upper_blue)
+    
+    # Find contours (outlines) of the blue icon
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    detected_coords = None
+    
+    if contours:
+        # Find the largest blue object (which is the Telegram icon)
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, w_box, h_box = cv2.boundingRect(largest_contour)
+        
+        log_message(f"✅ Found Blue Telegram Icon at ({x}, {y})")
+        
+        # 2. EXPAND THE BOX TO INCLUDE THE TEXT ON THE RIGHT
+        # We expand width by 2.5x to capture the 't.me/...' text next to it
+        expand_right = int(w_box * 2.5)
+        padding = 10
+        
+        x = max(0, x - padding)
+        y = max(0, y - padding)
+        w_box = min(w - x, w_box + expand_right + padding)
+        h_box = min(h - y, h_box + padding * 2)
+        
+        detected_coords = (x, y, w_box, h_box)
+        log_message(f"✅ Expanded box to cover text. New area: {w_box}x{h_box}")
+        
+    else:
+        # 3. FALLBACK: If no blue icon found, use Tesseract to scan for text
+        log_message("⚠️ No blue icon found. Falling back to text detection in bottom half.")
+        crop_bottom = int(h * 0.30)
+        bottom_half = img[h - crop_bottom:h, 0:w]
+        gray = cv2.cvtColor(bottom_half, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
+        data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
+        
+        for i in range(len(data['text'])):
+            if int(data['conf'][i]) > 30:
+                text = data['text'][i].strip()
+                if text:
+                    x = data['left'][i]
+                    y = data['top'][i] + (h - crop_bottom)
+                    w_box = data['width'][i]
+                    h_box = data['height'][i]
+                    
+                    padding = 15
+                    x = max(0, x - padding)
+                    y = max(0, y - padding)
+                    w_box = min(w - x, w_box + padding*2)
+                    h_box = min(h - y, h_box + padding*2)
+                    
+                    detected_coords = (x, y, w_box, h_box)
+                    log_message(f"✅ Fallback: Found text '{text}' at ({x}, {y})")
+                    break
 
-    # 2. Create a mask to tell OpenCV to erase this exact region
-    mask = np.zeros((h, w), dtype=np.uint8)
-    mask[crop_y:h, crop_x:w] = 255  # White = area to erase
+    # 4. IF NOTHING FOUND, USE A DEFAULT BOTTOM-RIGHT BOX
+    if not detected_coords:
+        log_message("⚠️ Nothing found. Using default bottom-right area.")
+        x = w - 400
+        y = h - 100
+        detected_coords = (x, y, 400, 100)
 
-    # 3. AI Inpainting (Generates seamless background)
-    # Note: Requires opencv-contrib-python for full effect, but standard TELEA works great
-    cleaned_img = cv2.inpaint(img, mask, 5, cv2.INPAINT_TELEA)
+    # 5. CREATE THE INPAINTING MASK
+    x, y, w_box, h_box = detected_coords
+    inpaint_mask = np.zeros((h, w), dtype=np.uint8)
+    inpaint_mask[y:y+h_box, x:x+w_box] = 255
 
-    # 4. Convert to PIL to add text
+    # 6. AI INPAINT TO REMOVE THE ICON AND TEXT
+    cleaned_img = cv2.inpaint(img, inpaint_mask, 5, cv2.INPAINT_TELEA)
+
+    # 7. ADD NEW TEXT EXACTLY OVER THE REMOVED AREA (BOLD & ITALIC, NO BACKGROUND)
     pil_img = Image.fromarray(cv2.cvtColor(cleaned_img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_img)
     
-    # Calculate font size relative to image (Medium sized for center)
-    font_size = int(min(h, w) * 0.05) 
+    # Set font size
+    font_size = int(min(h, w) * 0.04)
     try:
-        font = ImageFont.truetype("arial.ttf", font_size)
+        # Try to load Arial Bold
+        font = ImageFont.truetype("arialbd.ttf", font_size)
+        
+        # Hack: PIL doesn't support true Italic natively. 
+        # We apply a "pseudo-italic" by shearing the text.
+        # But for clean brand marks, just Bold is usually enough.
+        # To force Italic, we use a specific Italic font file if available.
+        try:
+            # Try Arial Italic for the italic look
+            font = ImageFont.truetype("ariali.ttf", font_size)
+        except:
+            pass
     except:
+        # Fallback to default font if arialbd.ttf is missing
         font = ImageFont.load_default()
         
     bbox = draw.textbbox((0, 0), new_text, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
-    # 5. Place Text EXACTLY in the Middle (Copyright Style)
-    center_x = (w - text_w) // 2
-    center_y = (h - text_h) // 2
+    # Center the new text perfectly inside the detected box
+    center_x = x + (w_box // 2) - (text_w // 2)
+    center_y = y + (h_box // 2) - (text_h // 2)
 
-    # Draw a neat, semi-transparent black box behind the text for readabiity
-    padding = 15
-    draw.rectangle([center_x-padding, center_y-padding, center_x+text_w+padding, center_y+text_h+padding], fill=(0,0,0,160))
-    # Draw the text in solid white
+    # ❌ REMOVED THE BLACK BACKGROUND BOX
+    # draw.rectangle([center_x-10, center_y-10, center_x+text_w+10, center_y+text_h+10], fill=(0,0,0,180))
+    
+    # Just draw the text directly in pure white (Bold)
     draw.text((center_x, center_y), new_text, font=font, fill="white")
     
     pil_img.save(output_path)
 
-def studio_video_erase_and_center(input_path, output_path, new_text):
-    """
-    Uses FFmpeg to paint a black box over the bottom-right corner,
-    effectively removing the old watermark, then places text in the center.
-    """
+def pixel_perfect_video_removal(input_path, output_path, new_text):
+    cap = cv2.VideoCapture(input_path)
+    ret, first_frame = cap.read()
+    cap.release()
+    if not ret:
+        raise Exception("Could not read video")
+        
+    h, w, _ = first_frame.shape
     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
     
-    # Define the bottom-right corner region to paint black (15% width, 15% height)
-    w_perc = 0.20  # 20% width from the right
-    h_perc = 0.15  # 15% height from the bottom
-    x_perc = 0.80  # Start 80% from left
-    y_perc = 0.85  # Start 85% from top
+    # 1. DETECT BLUE ICON ON THE FIRST FRAME
+    hsv = cv2.cvtColor(first_frame, cv2.COLOR_BGR2HSV)
+    lower_blue = np.array([95, 100, 100])
+    upper_blue = np.array([125, 255, 255])
+    mask = cv2.inRange(hsv, lower_blue, upper_blue)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Draw box to erase old watermark, then draw text in the center
+    x, y, w_box, h_box = 0, 0, 0, 0
+    
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, w_box, h_box = cv2.boundingRect(largest_contour)
+        # Expand to cover text
+        expand_right = int(w_box * 2.5)
+        x = max(0, x - 10)
+        y = max(0, y - 10)
+        w_box = min(w - x, w_box + expand_right + 10)
+        h_box = min(h - y, h_box + 20)
+        log_message(f"🎥 Video: Found blue icon at ({x}, {y})")
+    else:
+        # Fallback to default bottom-right
+        log_message("🎥 Video: No blue icon, using default area.")
+        x = w - 400
+        y = h - 100
+        w_box = 400
+        h_box = 100
+    
+    x_perc = x / w
+    y_perc = y / h
+    w_perc = w_box / w
+    h_perc = h_box / h
+
+    # 2. FFMPEG: Erase exact box + Add new text (No background, Bold Italic style)
     filter_complex = (
         f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
         f"[erased]drawtext=text='{safe_text}':"
-        f"fontcolor=white:fontsize=40:"
-        f"box=1:boxcolor=black@0.5:boxborderw=10:"
-        f"x=(w-text_w)/2:y=(h-text_h)/2[out]"  # EXACT CENTER FORMULA
+        f"fontcolor=white:fontsize=35:"
+        f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:" # Try to load a bold font
+        f"x={x}:y={y}[out]"
     )
     
     cmd = [
@@ -256,7 +358,7 @@ def studio_video_erase_and_center(input_path, output_path, new_text):
     subprocess.run(cmd, check=True)
 
 # ==========================================
-# 🎨 FLASK DASHBOARD UI
+# 🎨 FLASK DASHBOARD
 # ==========================================
 app_web = Flask(__name__)
 
@@ -266,7 +368,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 Studio Brand Bot</title>
+    <title>🤖 Pixel Bot</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body { background: #0f172a; color: #e2e8f0; padding: 20px; }
@@ -293,7 +395,8 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 Studio Brand Bot</h1>
+            <h1>Branding Bot</h1>
+            <p>free to use</p>
             <div><span class="status-badge">🟢 Online</span></div>
         </div>
         <div class="stats-grid">
@@ -345,5 +448,5 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, process_album), group=1)
     
-    log_message("🤖 Studio Bot started successfully!")
+    log_message("🤖 Pixel-Perfect Bot started successfully!")
     application.run_polling()
