@@ -291,18 +291,72 @@ def smart_remove_and_replace_image(input_path, output_path, new_text):
     draw.text((center_x, center_y), new_text, font=font, fill="white")
     pil_img.save(output_path)
 
+# def smart_remove_and_replace_video(input_path, output_path, new_text):
+#     cap = cv2.VideoCapture(input_path)
+#     ret, first_frame = cap.read()
+#     cap.release()
+#     if not ret:
+#         raise Exception("Could not read video")
+        
+#     h, w, _ = first_frame.shape
+#     gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
+#     _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
+#     data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
+    
+#     coords = None
+#     for i in range(len(data['text'])):
+#         if int(data['conf'][i]) > 30:
+#             text = data['text'][i].strip()
+#             if text:
+#                 x, y, w_box, h_box = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+#                 coords = (x, y, w_box, h_box)
+#                 break
+    
+#     if not coords:
+#         coords = (w-400, h-100, 400, 100)
+    
+#     x, y, w_box, h_box = coords
+#     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
+    
+#     x_perc = x / w
+#     y_perc = y / h
+#     w_perc = w_box / w
+#     h_perc = h_box / h
+    
+#     filter_complex = (
+#         f"[0:v]split[orig][blur];"
+#         f"[blur]crop=iw*{w_perc}:ih*{h_perc}:iw*{x_perc}:ih*{y_perc},"
+#         f"gblur=sigma=15[blurred];"
+#         f"[orig][blurred]overlay=W*{x_perc}:H*{y_perc}[withblur];"
+#         f"[withblur]drawtext=text='{safe_text}':"
+#         f"fontcolor=white:fontsize=35:"
+#         f"box=1:boxcolor=black@0.5:boxborderw=10:"
+#         f"x={x}:y={y}[out]"
+#     )
+    
+#     cmd = [
+#         "ffmpeg", "-i", input_path,
+#         "-filter_complex", filter_complex,
+#         "-map", "[out]",
+#         "-map", "0:a?",
+#         "-c:a", "copy",
+#         "-preset", "fast",
+#         "-y", output_path
+#     ]
+#     subprocess.run(cmd, check=True)
 def smart_remove_and_replace_video(input_path, output_path, new_text):
     cap = cv2.VideoCapture(input_path)
     ret, first_frame = cap.read()
     cap.release()
     if not ret:
-        raise Exception("Could not read video")
+        raise Exception("video not found")
         
     h, w, _ = first_frame.shape
     gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
     data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
     
+    # 1. Detect where the text is
     coords = None
     for i in range(len(data['text'])):
         if int(data['conf'][i]) > 30:
@@ -317,18 +371,20 @@ def smart_remove_and_replace_video(input_path, output_path, new_text):
     
     x, y, w_box, h_box = coords
     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
-    
+
+    # 2. Calculate percentage positions for FFmpeg
     x_perc = x / w
     y_perc = y / h
     w_perc = w_box / w
     h_perc = h_box / h
-    
+
+    # 3. The "Perfect Patch" Trick
+    # We grab a CLEAN, empty black area from the bottom-left corner 
+    # and overlay it exactly over the detected text to completely erase it.
+    # Then we draw the new text.
     filter_complex = (
-        f"[0:v]split[orig][blur];"
-        f"[blur]crop=iw*{w_perc}:ih*{h_perc}:iw*{x_perc}:ih*{y_perc},"
-        f"gblur=sigma=15[blurred];"
-        f"[orig][blurred]overlay=W*{x_perc}:H*{y_perc}[withblur];"
-        f"[withblur]drawtext=text='{safe_text}':"
+        f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
+        f"[erased]drawtext=text='{safe_text}':"
         f"fontcolor=white:fontsize=35:"
         f"box=1:boxcolor=black@0.5:boxborderw=10:"
         f"x={x}:y={y}[out]"
@@ -344,7 +400,6 @@ def smart_remove_and_replace_video(input_path, output_path, new_text):
         "-y", output_path
     ]
     subprocess.run(cmd, check=True)
-
 # ==========================================
 # 🎨 FLASK DASHBOARD UI
 # ==========================================
@@ -384,7 +439,7 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖Brand Watermsrk Remover </h1>
+            <h1>Watermsrk Remover </h1>
             <div><span class="status-badge">🟢 Online</span></div>
         </div>
         <div class="stats-grid">
