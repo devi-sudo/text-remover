@@ -1,22 +1,13 @@
 import os
 import cv2
 import numpy as np
-import pytesseract
 import subprocess
 import threading
 import time
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, render_template_string, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
-
-# ==========================================
-# TESSERACT PATH
-# ==========================================
-if os.name == 'nt':  # Windows
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
-else:  # Linux (Render / Docker)
-    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ==========================================
 # GLOBAL VARIABLES
@@ -39,17 +30,17 @@ def log_message(msg):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    brand_status = f"✅ Your current brand: **{user_brands[user_id]}**" if user_id in user_brands else "❌ No brand set yet."
+    brand_status = f"✅ Your brand: **{user_brands[user_id]}**" if user_id in user_brands else "❌ No brand set."
     welcome_message = (
         f"👋 **Hello {user.first_name}!**\n\n"
-        f"🤖 I am your **Smart Brand Text Remover Bot**.\n"
-        f"I detect your old watermark and replace it with your brand!\n\n"
-        f"📌 **How to use me:**\n"
-        f"1️⃣ Set your brand: `/setbrand t.me/yourchannel`\n"
+        f"🤖 **Studio Brand Bot**\n"
+        f"I erase the bottom-right watermark completely, and place your brand in the center.\n\n"
+        f"📌 **How to use:**\n"
+        f"1️⃣ Set brand: `/setbrand YourBrandName`\n"
         f"2️⃣ Upload a photo or video.\n"
-        f"3️⃣ I will detect, erase, and add **your brand**!\n\n"
+        f"3️⃣ Get a studio-clean result!\n\n"
         f"{brand_status}\n\n"
-        f"🚀 **Ready to start?** Upload a photo or video below!"
+        f"🚀 **Upload a media file below!**"
     )
     keyboard = [[InlineKeyboardButton("📸 Upload Media", switch_inline_query="")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -63,16 +54,16 @@ async def set_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = ' '.join(context.args)
     if not text:
-        await update.message.reply_text("❌ **Usage:** `/setbrand YourBrandName`\nExample: `/setbrand t.me/mychannel`", parse_mode='Markdown')
+        await update.message.reply_text("❌ **Usage:** `/setbrand YourBrandName`", parse_mode='Markdown')
         return
     user_brands[user_id] = text
     log_message(f"👤 User {user_id} set brand: {text}")
-    await update.message.reply_text(f"✅ **Brand saved successfully!**\n\n`{text}`\n\nNow upload a photo or video to apply it.", parse_mode='Markdown')
+    await update.message.reply_text(f"✅ **Brand saved!**\n\n`{text}`\n\nUpload your media now.", parse_mode='Markdown')
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_brands:
-        await update.message.reply_text("⚠️ **Please set your brand first!**\nUse `/setbrand t.me/yourchannel`", parse_mode='Markdown')
+        await update.message.reply_text("⚠️ **Set your brand first!**\nUse `/setbrand YourBrandName`", parse_mode='Markdown')
         return
 
     brand_text = user_brands[user_id]
@@ -103,23 +94,22 @@ async def process_single_file(update, context, user_id, brand_text, message):
         ext = ".jpg"
         media_type = "photo"
     else:
-        await message.reply_text("Please send a photo or video.")
         return
 
-    base_name = f"{user_id}_{message.message_id}_{message.date.timestamp()}"
+    base_name = f"{user_id}_{message.message_id}_{int(time.time())}"
     input_path = f"{base_name}_input{ext}"
     output_path = f"{base_name}_output{ext}"
 
     try:
-        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**\n🔍 Smart scanning for text...", parse_mode='Markdown')
+        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**\n🧹 Erasing bottom-right watermark...", parse_mode='Markdown')
         await file.download_to_drive(input_path)
         
         if media_type == "photo":
-            hybrid_smart_photo_removal(input_path, output_path, brand_text)
+            studio_erase_and_center(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_photo(photo=open(output_path, 'rb'))
         else:
-            hybrid_smart_video_removal(input_path, output_path, brand_text)
+            studio_video_erase_and_center(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_video(video=open(output_path, 'rb'))
             
@@ -163,10 +153,10 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await file.download_to_drive(input_path)
             if media_type == "photo":
-                hybrid_smart_photo_removal(input_path, output_path, brand_text)
+                studio_erase_and_center(input_path, output_path, brand_text)
                 output_media.append({'type': 'photo', 'media': open(output_path, 'rb')})
             else:
-                hybrid_smart_video_removal(input_path, output_path, brand_text)
+                studio_video_erase_and_center(input_path, output_path, brand_text)
                 output_media.append({'type': 'video', 'media': open(output_path, 'rb')})
         except Exception as e:
             log_message(f"❌ Album Error: {e}")
@@ -180,66 +170,38 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(item['media'].name): os.remove(item['media'].name)
 
 # ==========================================
-# 🔥 HYBRID SMART DETECTION + ERASE (BEST QUALITY)
+# 🎨 STUDIO-GRADE TEXT REMOVAL
 # ==========================================
 
-def hybrid_smart_photo_removal(input_path, output_path, new_text):
+def studio_erase_and_center(input_path, output_path, new_text):
+    """
+    Removes the ENTIRE bottom-right corner using AI Inpainting.
+    Then places the brand text perfectly in the CENTER of the screen.
+    """
     img = cv2.imread(input_path)
     h, w, _ = img.shape
 
-    # 1. CROP THE BOTTOM 30% ONLY (This stops it from seeing "1mo" at the top)
-    crop_bottom = int(h * 0.30)
-    bottom_half = img[h - crop_bottom:h, 0:w]
-    
-    # 2. DETECT TEXT ONLY IN THE BOTTOM CROP
-    gray = cv2.cvtColor(bottom_half, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
-    data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
-    
+    # 1. Target the entire bottom-right 15% of the image
+    crop_y = int(h * 0.85)  # Start 85% down
+    crop_x = int(w * 0.80)  # Start 80% right
+    box_h = h - crop_y
+    box_w = w - crop_x
+
+    # 2. Create a mask to tell OpenCV to erase this exact region
     mask = np.zeros((h, w), dtype=np.uint8)
-    detected_coords = None
-    found = False
+    mask[crop_y:h, crop_x:w] = 255  # White = area to erase
 
-    for i in range(len(data['text'])):
-        if int(data['conf'][i]) > 30:
-            text = data['text'][i].strip()
-            if text:
-                # Adjust coordinates back to the full image
-                x = data['left'][i]
-                y = data['top'][i] + (h - crop_bottom)
-                w_box = data['width'][i]
-                h_box = data['height'][i]
-                
-                # Expand box to fully cover text
-                padding = 15
-                x = max(0, x - padding)
-                y = max(0, y - padding)
-                w_box = min(w - x, w_box + padding*2)
-                h_box = min(h - y, h_box + padding*2)
-                
-                mask[y:y+h_box, x:x+w_box] = 255
-                detected_coords = (x, y, w_box, h_box)
-                found = True
-                log_message(f"✅ Detected text '{text}' at {x},{y}")
-                break # Only take the first/largest text found
-
-    # 3. FALLBACK: If no text found, use bottom-right corner
-    if not found:
-        log_message("⚠️ No text found in bottom 30%, using bottom-right default.")
-        x = w - 400
-        y = h - 100
-        detected_coords = (x, y, 400, 100)
-        mask[y:y+100, x:x+400] = 255
-
-    # 4. AI INPAINTING TO ERASE TEXT
+    # 3. AI Inpainting (Generates seamless background)
+    # Note: Requires opencv-contrib-python for full effect, but standard TELEA works great
     cleaned_img = cv2.inpaint(img, mask, 5, cv2.INPAINT_TELEA)
 
-    # 5. ADD NEW TEXT AT EXACT DETECTED POSITION
+    # 4. Convert to PIL to add text
     pil_img = Image.fromarray(cv2.cvtColor(cleaned_img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_img)
     
+    # Calculate font size relative to image (Medium sized for center)
+    font_size = int(min(h, w) * 0.05) 
     try:
-        font_size = int(min(h, w) * 0.04)
         font = ImageFont.truetype("arial.ttf", font_size)
     except:
         font = ImageFont.load_default()
@@ -248,63 +210,38 @@ def hybrid_smart_photo_removal(input_path, output_path, new_text):
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
-    x, y, old_w, old_h = detected_coords
-    # Center the text inside the detected box
-    center_x = x + (old_w // 2) - (text_w // 2)
-    center_y = y + (old_h // 2) - (text_h // 2)
+    # 5. Place Text EXACTLY in the Middle (Copyright Style)
+    center_x = (w - text_w) // 2
+    center_y = (h - text_h) // 2
 
-    draw.rectangle([center_x-10, center_y-10, center_x+text_w+10, center_y+text_h+10], fill=(0,0,0,180))
+    # Draw a neat, semi-transparent black box behind the text for readabiity
+    padding = 15
+    draw.rectangle([center_x-padding, center_y-padding, center_x+text_w+padding, center_y+text_h+padding], fill=(0,0,0,160))
+    # Draw the text in solid white
     draw.text((center_x, center_y), new_text, font=font, fill="white")
+    
     pil_img.save(output_path)
 
-def hybrid_smart_video_removal(input_path, output_path, new_text):
-    cap = cv2.VideoCapture(input_path)
-    ret, first_frame = cap.read()
-    cap.release()
-    if not ret:
-        raise Exception("Could not read video")
-        
-    h, w, _ = first_frame.shape
-    
-    # 1. SCAN BOTTOM 30% OF FIRST FRAME ONLY
-    crop_bottom = int(h * 0.30)
-    bottom_half = first_frame[h - crop_bottom:h, 0:w]
-    gray = cv2.cvtColor(bottom_half, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
-    data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
-    
-    coords = None
-    for i in range(len(data['text'])):
-        if int(data['conf'][i]) > 30:
-            text = data['text'][i].strip()
-            if text:
-                x = data['left'][i]
-                y = data['top'][i] + (h - crop_bottom)
-                w_box = data['width'][i]
-                h_box = data['height'][i]
-                coords = (x, y, w_box, h_box)
-                log_message(f"🎥 Video detected text '{text}'")
-                break
-    
-    if not coords:
-        log_message("⚠️ Video: No text found, using bottom-right default.")
-        coords = (w-400, h-100, 400, 100)
-    
-    x, y, w_box, h_box = coords
+def studio_video_erase_and_center(input_path, output_path, new_text):
+    """
+    Uses FFmpeg to paint a black box over the bottom-right corner,
+    effectively removing the old watermark, then places text in the center.
+    """
     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
     
-    x_perc = x / w
-    y_perc = y / h
-    w_perc = w_box / w
-    h_perc = h_box / h
-
-    # 2. PATCH + ADD NEW TEXT
+    # Define the bottom-right corner region to paint black (15% width, 15% height)
+    w_perc = 0.20  # 20% width from the right
+    h_perc = 0.15  # 15% height from the bottom
+    x_perc = 0.80  # Start 80% from left
+    y_perc = 0.85  # Start 85% from top
+    
+    # Draw box to erase old watermark, then draw text in the center
     filter_complex = (
         f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
         f"[erased]drawtext=text='{safe_text}':"
-        f"fontcolor=white:fontsize=35:"
+        f"fontcolor=white:fontsize=40:"
         f"box=1:boxcolor=black@0.5:boxborderw=10:"
-        f"x={x}:y={y}[out]"
+        f"x=(w-text_w)/2:y=(h-text_h)/2[out]"  # EXACT CENTER FORMULA
     )
     
     cmd = [
@@ -329,7 +266,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 Brand Bot Dashboard</title>
+    <title>🤖 Studio Brand Bot</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body { background: #0f172a; color: #e2e8f0; padding: 20px; }
@@ -351,44 +288,22 @@ HTML_TEMPLATE = """
         .refresh-btn { background: #3b82f6; border: none; color: white; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; transition: 0.2s; }
         .refresh-btn:hover { background: #2563eb; }
         .footer { text-align: center; margin-top: 25px; color: #64748b; font-size: 14px; }
-        .footer a { color: #3b82f6; text-decoration: none; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 Brand Text Remover Bot</h1>
+            <h1>🤖 Studio Brand Bot</h1>
             <div><span class="status-badge">🟢 Online</span></div>
         </div>
         <div class="stats-grid">
-            <div class="stat-card">
-                <h3>Uptime</h3>
-                <div class="value">{{ uptime }}</div>
-            </div>
-            <div class="stat-card">
-                <h3>Total Users</h3>
-                <div class="value">{{ users }}</div>
-            </div>
-            <div class="stat-card">
-                <h3>Last Command</h3>
-                <div class="value" style="font-size: 16px; color: #facc15;">{{ last_cmd }}</div>
-            </div>
+            <div class="stat-card"><h3>Uptime</h3><div class="value">{{ uptime }}</div></div>
+            <div class="stat-card"><h3>Total Users</h3><div class="value">{{ users }}</div></div>
+            <div class="stat-card"><h3>Last Command</h3><div class="value" style="font-size: 16px; color: #facc15;">{{ last_cmd }}</div></div>
         </div>
         <div class="logs-container">
-            <div class="logs-header">
-                <h2>📋 Live Activity Logs</h2>
-                <button class="refresh-btn" onclick="location.reload()">🔄 Refresh</button>
-            </div>
-            <div class="logs-box" id="logBox">
-                {% for log in logs %}
-                <div class="log-entry">
-                    <span class="log-time">{{ log }}</span>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-        <div class="footer">
-            Built with ❤️ 
+            <div class="logs-header"><h2>📋 Live Logs</h2><button class="refresh-btn" onclick="location.reload()">🔄 Refresh</button></div>
+            <div class="logs-box">{% for log in logs %}<div class="log-entry"><span class="log-time">{{ log }}</span></div>{% endfor %}</div>
         </div>
     </div>
 </body>
@@ -413,12 +328,12 @@ def run_flask():
     app_web.run(host='0.0.0.0', port=10000)
 
 # ==========================================
-# MAIN ENTRY POINT
+# MAIN
 # ==========================================
 if __name__ == "__main__":
     TOKEN = os.environ.get("BOT_TOKEN")
     if not TOKEN:
-        log_message("❌ Error: BOT_TOKEN environment variable is not set!")
+        log_message("❌ Error: BOT_TOKEN missing!")
         exit(1)
 
     threading.Thread(target=run_flask, daemon=True).start()
@@ -430,5 +345,5 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, process_album), group=1)
     
-    log_message("🤖 Smart Hybrid Bot started successfully!")
+    log_message("🤖 Studio Bot started successfully!")
     application.run_polling()
