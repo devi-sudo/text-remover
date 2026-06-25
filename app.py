@@ -31,16 +31,16 @@ def log_message(msg):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    brand_status = f"✅ Your brand: **{user_brands[user_id]}**" if user_id in user_brands else "❌ No brand set."
+    brand_status = f"✅Your brand: **{user_brands[user_id]}**" if user_id in user_brands else "❌ No brand set."
     welcome_message = (
-        f"👋 **Hello {user.first_name}!**\n\n"
-        f"🤖 **Pixel-Perfect Brand Bot**\n"
-        f"I detect the Blue Telegram Icon, remove it, and place your brand (Bold & Italic)!\n\n"
+        f"👋 **Hello {user.first_name}❤️!**\n\n"
+        f"🤖 **WaterMark Rewrite Bot**\n"
         f"📌 **How to use:**\n"
         f"1️⃣ Set brand: `/setbrand YourBrandName`\n"
         f"2️⃣ Upload a photo or video.\n"
         f"3️⃣ Get a clean, professional result!\n\n"
         f"{brand_status}\n\n"
+     f"🥹😂 **help - t.me/paid_promo0x**\n\n"
         f"🚀 **Upload a media file below!**"
     )
     keyboard = [[InlineKeyboardButton("📸 Upload Media", switch_inline_query="")]]
@@ -59,7 +59,7 @@ async def set_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_brands[user_id] = text
     log_message(f"👤 User {user_id} set brand: {text}")
-    await update.message.reply_text(f"✅ **Brand saved!**\n\n`{text}`\n\nUpload your media now.", parse_mode='Markdown')
+    await update.message.reply_text(f"✅ **Brand Name saved!**\n\n`{text}`\n\nUpload your media now.", parse_mode='Markdown')
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -102,7 +102,7 @@ async def process_single_file(update, context, user_id, brand_text, message):
     output_path = f"{base_name}_output{ext}"
 
     try:
-        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**\n🔍 Detecting Blue Icon...", parse_mode='Markdown')
+        status_msg = await message.reply_text(f"⏳", parse_mode='Markdown')
         await file.download_to_drive(input_path)
         
         if media_type == "photo":
@@ -131,7 +131,7 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     brand_text = album_data['brand']
     messages = album_data['files']
     log_message(f"📦 Processing Album with {len(messages)} files")
-    status_msg = await update.message.reply_text(f"📦 **Album detected!**\nProcessing {len(messages)} files...", parse_mode='Markdown')
+    status_msg = await update.message.reply_text(f"👀 **Album detected!**\nProcessing {len(messages)} files...", parse_mode='Markdown')
 
     output_media = []
     for idx, message in enumerate(messages):
@@ -339,7 +339,7 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
 
     # 2. FFMPEG: Erase exact box + Add new text (No background, Bold Italic style)
     filter_complex = (
-        f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
+        f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=yellow:t=fill[erased];"
         f"[erased]drawtext=text='{safe_text}':"
         f"fontcolor=white:fontsize=35:"
         f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:" # Try to load a bold font
