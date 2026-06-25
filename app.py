@@ -262,13 +262,22 @@ def smart_remove_and_replace_video(input_path, output_path, new_text):
 # ==========================================
 # MAIN
 # ==========================================
+# ==========================================
+# MAIN
+# ==========================================
 if __name__ == "__main__":
-   TOKEN = os.environ.get("BOT_TOKEN")
+    TOKEN = os.environ.get("BOT_TOKEN")
     
+    # If TOKEN is missing, stop and show error in logs
+    if not TOKEN:
+        print("❌ Error: BOT_TOKEN environment variable is not set!")
+        exit(1)
+
     application = Application.builder().token(TOKEN).build()
+    
     application.add_handler(CommandHandler("setbrand", set_brand))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, process_album), group=1)
     
-    print("🤖 Bot Running...")
+    print("🤖 Bot Running on Render...")
     application.run_polling()
