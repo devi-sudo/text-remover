@@ -7,8 +7,6 @@ import threading
 import time
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, render_template_string, jsonify
-
-# Telegram Bot imports (ALL fixed here)
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 
@@ -41,64 +39,22 @@ def log_message(msg):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    
     brand_status = f"✅ Your current brand: **{user_brands[user_id]}**" if user_id in user_brands else "❌ No brand set yet."
-    
     welcome_message = (
         f"👋 **Hello {user.first_name}!**\n\n"
-        f"🤖 I am your **Smart Brand/Watermark Text Remover Bot**.\n"
-        f"I can automatically **detect, erase, and replace** any text or watermark on your photos and videos!\n\n"
+        f"🤖 I am your **Brand Text Remover Bot**.\n"
+        f"I automatically erase the **bottom-right watermark** and add your brand!\n\n"
         f"📌 **How to use me:**\n"
         f"1️⃣ Set your brand: `/setbrand t.me/yourchannel`\n"
-        f"2️⃣ Upload a photo or video (with old text on it).\n"
-        f"3️⃣ I will remove the old text and add **your brand** in the exact same spot!\n\n"
+        f"2️⃣ Upload a photo or video.\n"
+        f"3️⃣ I will remove old text and add **your brand**!\n\n"
         f"{brand_status}\n\n"
         f"🚀 **Ready to start?** Upload a photo or video below!"
     )
-    
-    keyboard = [
-        [InlineKeyboardButton("📸 Upload Media", switch_inline_query="")],
-        [InlineKeyboardButton("ℹ️ Help", callback_data="help")]
-    ]
+    keyboard = [[InlineKeyboardButton("📸 Upload Media", switch_inline_query="")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        welcome_message, 
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text(welcome_message, parse_mode='Markdown', reply_markup=reply_markup)
     log_message(f"👤 User {user_id} started the bot")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "🛠️ **How to use this Bot:**\n\n"
-        "1. **Set your brand**: Use `/setbrand YourBrandName`\n"
-        "   Example: `/setbrand t.me/mychannel`\n\n"
-        "2. **Upload Media**: Send a photo or video file.\n"
-        "   - I will detect any text on it.\n"
-        "   - I will remove the old text using AI.\n"
-        "   - I will place **your brand** exactly where the old text was.\n\n"
-        "3. **Albums**: You can send multiple photos/videos at once. I will process the whole album and return it!\n\n"
-        "⚠️ **Note**: For best results, make sure the text is clear and readable."
-    )
-    await update.message.reply_text(help_text, parse_mode='Markdown')
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == "help":
-        help_text = (
-            "🛠️ **How to use this Bot:**\n\n"
-            "1. **Set your brand**: Use `/setbrand YourBrandName`\n"
-            "   Example: `/setbrand t.me/mychannel`\n\n"
-            "2. **Upload Media**: Send a photo or video file.\n"
-            "   - I will detect any text on it.\n"
-            "   - I will remove the old text using AI.\n"
-            "   - I will place **your brand** exactly where the old text was.\n\n"
-            "3. **Albums**: You can send multiple photos/videos at once. I will process the whole album and return it!\n\n"
-            "⚠️ **Note**: For best results, make sure the text is clear and readable."
-        )
-        await query.message.reply_text(help_text, parse_mode='Markdown')
 
 # ==========================================
 # BOT COMMANDS
@@ -107,14 +63,9 @@ async def set_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = ' '.join(context.args)
     if not text:
-        await update.message.reply_text(
-            "❌ **Usage:** `/setbrand YourBrandName`\n"
-            "Example: `/setbrand t.me/mychannel`",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("❌ **Usage:** `/setbrand YourBrandName`\nExample: `/setbrand t.me/mychannel`", parse_mode='Markdown')
         return
     user_brands[user_id] = text
-    last_command = f"/setbrand {text}"
     log_message(f"👤 User {user_id} set brand: {text}")
     await update.message.reply_text(f"✅ **Brand saved successfully!**\n\n`{text}`\n\nNow upload a photo or video to apply it.", parse_mode='Markdown')
 
@@ -126,8 +77,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     brand_text = user_brands[user_id]
     message = update.message
-    last_command = f"Uploaded {'Video' if message.video else 'Photo'}"
-    log_message(f"📤 User {user_id} uploaded {last_command}")
+    log_message(f"📤 User {user_id} uploaded {'Video' if message.video else 'Photo'}")
 
     if message.media_group_id:
         if 'albums' not in context.bot_data:
@@ -161,48 +111,42 @@ async def process_single_file(update, context, user_id, brand_text, message):
     output_path = f"{base_name}_output{ext}"
 
     try:
-        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**\n🔍 Detecting and removing old text...", parse_mode='Markdown')
-        log_message(f"⚙️ Processing {media_type} for User {user_id}")
+        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**\nRemoving bottom-right text...", parse_mode='Markdown')
         await file.download_to_drive(input_path)
         
         if media_type == "photo":
-            smart_remove_and_replace_image(input_path, output_path, brand_text)
+            perfect_photo_removal(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_photo(photo=open(output_path, 'rb'))
         else:
-            smart_remove_and_replace_video(input_path, output_path, brand_text)
+            perfect_video_removal(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_video(video=open(output_path, 'rb'))
             
     except Exception as e:
-        log_message(f"❌ Error on {media_type}: {e}")
-        await message.reply_text(f"❌ **Error processing file:** {e}", parse_mode='Markdown')
+        log_message(f"❌ Error: {e}")
+        await message.reply_text(f"❌ **Error:** {e}", parse_mode='Markdown')
     finally:
         for path in [input_path, output_path]:
             if os.path.exists(path): os.remove(path)
 
 async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     album_id = update.message.media_group_id
-    if 'albums' not in context.bot_data:
-        return
-        
+    if 'albums' not in context.bot_data: return
     album_data = context.bot_data['albums'].pop(album_id, None)
-    if not album_data:
-        return
+    if not album_data: return
 
     user_id = album_data['user_id']
     brand_text = album_data['brand']
     messages = album_data['files']
-    
-    log_message(f"📦 Processing Album with {len(messages)} files for User {user_id}")
-    status_msg = await update.message.reply_text(f"📦 **Album detected!**\nProcessing {len(messages)} files... Please wait.", parse_mode='Markdown')
+    log_message(f"📦 Processing Album with {len(messages)} files")
+    status_msg = await update.message.reply_text(f"📦 **Album detected!**\nProcessing {len(messages)} files...", parse_mode='Markdown')
 
     output_media = []
     for idx, message in enumerate(messages):
         file = None
         ext = ""
         media_type = ""
-        
         if message.video:
             file = await message.video.get_file()
             ext = ".mp4"
@@ -219,13 +163,13 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await file.download_to_drive(input_path)
             if media_type == "photo":
-                smart_remove_and_replace_image(input_path, output_path, brand_text)
+                perfect_photo_removal(input_path, output_path, brand_text)
                 output_media.append({'type': 'photo', 'media': open(output_path, 'rb')})
             else:
-                smart_remove_and_replace_video(input_path, output_path, brand_text)
+                perfect_video_removal(input_path, output_path, brand_text)
                 output_media.append({'type': 'video', 'media': open(output_path, 'rb')})
         except Exception as e:
-            log_message(f"❌ Album Error on file {idx+1}: {e}")
+            log_message(f"❌ Album Error: {e}")
         finally:
             if os.path.exists(input_path): os.remove(input_path)
 
@@ -233,49 +177,42 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.delete()
         await update.message.reply_media_group(media=output_media)
         for item in output_media:
-            if os.path.exists(item['media'].name):
-                os.remove(item['media'].name)
+            if os.path.exists(item['media'].name): os.remove(item['media'].name)
 
 # ==========================================
-# TEXT DETECTION & REPLACEMENT
+# 🔥 HIGH-ACCURACY TEXT REMOVAL (NO MORE DETECTION MISTAKES)
 # ==========================================
-def smart_remove_and_replace_image(input_path, output_path, new_text):
+
+def perfect_photo_removal(input_path, output_path, new_text):
+    """
+    Instead of scanning for text, we manually focus on the bottom-right corner.
+    Uses OpenCV Inpainting to seamlessly remove the old text, then adds the new text.
+    """
     img = cv2.imread(input_path)
     h, w, _ = img.shape
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
-    data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
-    
+
+    # 1. DEFINE THE BOTTOM-RIGHT AREA (Adjust these % if needed)
+    # We assume the watermark is in the bottom 15% and right 20% of the screen
+    crop_y = int(h * 0.85)  # Start at 85% height
+    crop_x = int(w * 0.80)  # Start at 80% width
+    box_h = h - crop_y
+    box_w = w - crop_x
+
+    # 2. CREATE MASK FOR INPAINTING
     mask = np.zeros((h, w), dtype=np.uint8)
-    text_found = False
-    detected_text_coords = None
+    mask[crop_y:h, crop_x:w] = 255  # White area = text to remove
 
-    for i in range(len(data['text'])):
-        if int(data['conf'][i]) > 30:
-            text = data['text'][i].strip()
-            if text:
-                x, y, w_box, h_box = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-                padding = 15
-                x = max(0, x - padding)
-                y = max(0, y - padding)
-                w_box = min(w - x, w_box + padding*2)
-                h_box = min(h - y, h_box + padding*2)
-                mask[y:y+h_box, x:x+w_box] = 255
-                detected_text_coords = (x, y, w_box, h_box)
-                text_found = True
+    # 3. AI INPAINTING (Seamless removal)
+    cleaned_img = cv2.inpaint(img, mask, 5, cv2.INPAINT_TELEA)
 
-    if not text_found:
-        x = w - 400
-        y = h - 100
-        detected_text_coords = (x, y, 400, 100)
-        mask[y:y+100, x:x+400] = 255
-
-    cleaned_img = cv2.inpaint(img, mask, 3, cv2.INPAINT_TELEA)
+    # 4. ADD NEW TEXT
     pil_img = Image.fromarray(cv2.cvtColor(cleaned_img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_img)
     
     try:
-        font = ImageFont.truetype("arial.ttf", 35)
+        # Font size proportional to image height
+        font_size = int(min(h, w) * 0.04) 
+        font = ImageFont.truetype("arial.ttf", font_size)
     except:
         font = ImageFont.load_default()
         
@@ -283,111 +220,37 @@ def smart_remove_and_replace_image(input_path, output_path, new_text):
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
-    x, y, old_w, old_h = detected_text_coords
-    center_x = x + (old_w // 2) - (text_w // 2)
-    center_y = y + (old_h // 2) - (text_h // 2)
+    # Position at bottom-right with spacing
+    x = w - text_w - 20
+    y = h - text_h - 20
 
-    draw.rectangle([center_x-10, center_y-10, center_x+text_w+10, center_y+text_h+10], fill=(0,0,0,180))
-    draw.text((center_x, center_y), new_text, font=font, fill="white")
+    # Draw background for readability
+    draw.rectangle([x-10, y-10, x+text_w+10, y+text_h+10], fill=(0,0,0,180))
+    draw.text((x, y), new_text, font=font, fill="white")
     pil_img.save(output_path)
 
-# def smart_remove_and_replace_video(input_path, output_path, new_text):
-#     cap = cv2.VideoCapture(input_path)
-#     ret, first_frame = cap.read()
-#     cap.release()
-#     if not ret:
-#         raise Exception("Could not read video")
-        
-#     h, w, _ = first_frame.shape
-#     gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-#     _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
-#     data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
-    
-#     coords = None
-#     for i in range(len(data['text'])):
-#         if int(data['conf'][i]) > 30:
-#             text = data['text'][i].strip()
-#             if text:
-#                 x, y, w_box, h_box = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-#                 coords = (x, y, w_box, h_box)
-#                 break
-    
-#     if not coords:
-#         coords = (w-400, h-100, 400, 100)
-    
-#     x, y, w_box, h_box = coords
-#     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
-    
-#     x_perc = x / w
-#     y_perc = y / h
-#     w_perc = w_box / w
-#     h_perc = h_box / h
-    
-#     filter_complex = (
-#         f"[0:v]split[orig][blur];"
-#         f"[blur]crop=iw*{w_perc}:ih*{h_perc}:iw*{x_perc}:ih*{y_perc},"
-#         f"gblur=sigma=15[blurred];"
-#         f"[orig][blurred]overlay=W*{x_perc}:H*{y_perc}[withblur];"
-#         f"[withblur]drawtext=text='{safe_text}':"
-#         f"fontcolor=white:fontsize=35:"
-#         f"box=1:boxcolor=black@0.5:boxborderw=10:"
-#         f"x={x}:y={y}[out]"
-#     )
-    
-#     cmd = [
-#         "ffmpeg", "-i", input_path,
-#         "-filter_complex", filter_complex,
-#         "-map", "[out]",
-#         "-map", "0:a?",
-#         "-c:a", "copy",
-#         "-preset", "fast",
-#         "-y", output_path
-#     ]
-#     subprocess.run(cmd, check=True)
-def smart_remove_and_replace_video(input_path, output_path, new_text):
-    cap = cv2.VideoCapture(input_path)
-    ret, first_frame = cap.read()
-    cap.release()
-    if not ret:
-        raise Exception("video not found")
-        
-    h, w, _ = first_frame.shape
-    gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
-    data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
-    
-    # 1. Detect where the text is
-    coords = None
-    for i in range(len(data['text'])):
-        if int(data['conf'][i]) > 30:
-            text = data['text'][i].strip()
-            if text:
-                x, y, w_box, h_box = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-                coords = (x, y, w_box, h_box)
-                break
-    
-    if not coords:
-        coords = (w-400, h-100, 400, 100)
-    
-    x, y, w_box, h_box = coords
+def perfect_video_removal(input_path, output_path, new_text):
+    """
+    For videos, we use FFmpeg to draw a black patch over the bottom-right area,
+    completely erasing the old text, then overlays the new text.
+    """
     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
-
-    # 2. Calculate percentage positions for FFmpeg
-    x_perc = x / w
-    y_perc = y / h
-    w_perc = w_box / w
-    h_perc = h_box / h
-
-    # 3. The "Perfect Patch" Trick
-    # We grab a CLEAN, empty black area from the bottom-left corner 
-    # and overlay it exactly over the detected text to completely erase it.
-    # Then we draw the new text.
+    
+    # Fixed coordinates for bottom-right corner
+    # 15% from right, 15% from bottom (matches most Telegram watermarks)
+    w_perc = 0.20  # Width of the patch (20% of screen width)
+    h_perc = 0.15  # Height of the patch (15% of screen height)
+    x_perc = 0.80  # Start 80% from left
+    y_perc = 0.85  # Start 85% from top
+    
+    # The drawbox command creates a clean black rectangle over the old watermark
+    # The drawtext adds your brand right over it
     filter_complex = (
         f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
         f"[erased]drawtext=text='{safe_text}':"
         f"fontcolor=white:fontsize=35:"
         f"box=1:boxcolor=black@0.5:boxborderw=10:"
-        f"x={x}:y={y}[out]"
+        f"x=w-tw-20:y=h-th-20[out]"
     )
     
     cmd = [
@@ -400,6 +263,7 @@ def smart_remove_and_replace_video(input_path, output_path, new_text):
         "-y", output_path
     ]
     subprocess.run(cmd, check=True)
+
 # ==========================================
 # 🎨 FLASK DASHBOARD UI
 # ==========================================
@@ -439,21 +303,21 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>Watermsrk Remover </h1>
+            <h1>🤖 Brand Text Remover Bot</h1>
             <div><span class="status-badge">🟢 Online</span></div>
         </div>
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>Uptime</h3>
-                <div class="value" id="uptime">{{ uptime }}</div>
+                <div class="value">{{ uptime }}</div>
             </div>
             <div class="stat-card">
                 <h3>Total Users</h3>
-                <div class="value" id="users">{{ users }}</div>
+                <div class="value">{{ users }}</div>
             </div>
             <div class="stat-card">
                 <h3>Last Command</h3>
-                <div class="value" id="lastcmd" style="font-size: 16px; color: #facc15;">{{ last_cmd }}</div>
+                <div class="value" style="font-size: 16px; color: #facc15;">{{ last_cmd }}</div>
             </div>
         </div>
         <div class="logs-container">
@@ -470,7 +334,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
         <div class="footer">
-            Built with ❤️ | <a href="https://t.me/paid_promo0x" target="_blank"><i>Riyu 🫶🏼</i></a>
+            Built with ❤️ | <a href="https://t.me/YOUR_BOT_USERNAME" target="_blank">@YourBot</a>
         </div>
     </div>
 </body>
@@ -491,19 +355,6 @@ def dashboard():
         logs=bot_logs.copy()
     )
 
-@app_web.route('/api/status')
-def api_status():
-    uptime_seconds = int(time.time() - bot_start_time)
-    hours = uptime_seconds // 3600
-    minutes = (uptime_seconds % 3600) // 60
-    return jsonify({
-        'status': 'online',
-        'uptime': f"{hours}h {minutes}m",
-        'users': len(user_brands),
-        'last_command': last_command,
-        'logs': bot_logs.copy()
-    })
-
 def run_flask():
     app_web.run(host='0.0.0.0', port=10000)
 
@@ -520,14 +371,10 @@ if __name__ == "__main__":
     log_message("🌐 Dashboard started on port 10000")
 
     application = Application.builder().token(TOKEN).build()
-    
-    # Add Handlers
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("setbrand", set_brand))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, process_album), group=1)
-    application.add_handler(CallbackQueryHandler(button_callback))
     
-    log_message("🤖 Telegram Bot started successfully with /start greeting!")
+    log_message("🤖 Bot started successfully (High Accuracy Mode)!")
     application.run_polling()
