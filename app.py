@@ -5,19 +5,21 @@ import pytesseract
 import subprocess
 import threading
 import time
-import urllib.request
-import stat
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, render_template_string, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
+# ==========================================
+# TESSERACT PATH (Simple and Clean)
 # ==========================================
 if os.name == 'nt':  # Windows
     pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
 else:  # Linux (Render / Docker)
     pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+# ==========================================
 
+# ==========================================
 # GLOBAL VARIABLES
 # ==========================================
 user_brands = {}
@@ -39,7 +41,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     
-    # Check if user already has a brand saved
     brand_status = f"✅ Your current brand: **{user_brands[user_id]}**" if user_id in user_brands else "❌ No brand set yet."
     
     welcome_message = (
@@ -54,7 +55,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚀 **Ready to start?** Upload a photo or video below!"
     )
     
-    # Create a nice inline keyboard
     keyboard = [
         [InlineKeyboardButton("📸 Upload Media", switch_inline_query="")],
         [InlineKeyboardButton("ℹ️ Help", callback_data="help")]
@@ -86,7 +86,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "help":
-        await help_command(update, context)
+        # Send a new help message instead of calling the function directly
+        help_text = (
+            "🛠️ **How to use this Bot:**\n\n"
+            "1. **Set your brand**: Use `/setbrand YourBrandName`\n"
+            "   Example: `/setbrand t.me/mychannel`\n\n"
+            "2. **Upload Media**: Send a photo or video file.\n"
+            "   - I will detect any text on it.\n"
+            "   - I will remove the old text using AI.\n"
+            "   - I will place **your brand** exactly where the old text was.\n\n"
+            "3. **Albums**: You can send multiple photos/videos at once. I will process the whole album and return it!\n\n"
+            "⚠️ **Note**: For best results, make sure the text is clear and readable."
+        )
+        await query.message.reply_text(help_text, parse_mode='Markdown')
 
 # ==========================================
 # BOT COMMANDS (SET BRAND & MEDIA)
@@ -155,7 +167,7 @@ async def process_single_file(update, context, user_id, brand_text, message):
         
         if media_type == "photo":
             smart_remove_and_replace_image(input_path, output_path, brand_text)
-            await status_msg.delete()  # Delete the "Processing..." message
+            await status_msg.delete()
             await message.reply_photo(photo=open(output_path, 'rb'))
         else:
             smart_remove_and_replace_video(input_path, output_path, brand_text)
@@ -334,7 +346,7 @@ def smart_remove_and_replace_video(input_path, output_path, new_text):
     subprocess.run(cmd, check=True)
 
 # ==========================================
-# 🎨 FLASK DASHBOARD UI (Same as before)
+# 🎨 FLASK DASHBOARD UI
 # ==========================================
 app_web = Flask(__name__)
 
@@ -460,7 +472,9 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("setbrand", set_brand))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, process_album), group=1)
-    application.add_handler(MessageHandler(filters.CallbackQuery, button_callback))
+    
+    # ✅ FIXED: Use CallbackQueryHandler instead of filters.CallbackQuery
+    application.add_handler(CallbackQueryHandler(button_callback))
     
     log_message("🤖 Telegram Bot started successfully with /start greeting!")
     application.run_polling()
