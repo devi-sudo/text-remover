@@ -34,7 +34,7 @@ def log_message(msg):
     print(msg)
 
 # ==========================================
-# 🎉 START COMMAND (GREETING)
+# 🎉 START COMMAND
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -42,12 +42,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     brand_status = f"✅ Your current brand: **{user_brands[user_id]}**" if user_id in user_brands else "❌ No brand set yet."
     welcome_message = (
         f"👋 **Hello {user.first_name}!**\n\n"
-        f"🤖 I am your **Brand Text Remover Bot**.\n"
-        f"I automatically erase the **bottom-right watermark** and add your brand!\n\n"
+        f"🤖 I am your **Smart Brand Text Remover Bot**.\n"
+        f"I detect your old watermark and replace it with your brand!\n\n"
         f"📌 **How to use me:**\n"
         f"1️⃣ Set your brand: `/setbrand t.me/yourchannel`\n"
         f"2️⃣ Upload a photo or video.\n"
-        f"3️⃣ I will remove old text and add **your brand**!\n\n"
+        f"3️⃣ I will detect, erase, and add **your brand**!\n\n"
         f"{brand_status}\n\n"
         f"🚀 **Ready to start?** Upload a photo or video below!"
     )
@@ -111,15 +111,15 @@ async def process_single_file(update, context, user_id, brand_text, message):
     output_path = f"{base_name}_output{ext}"
 
     try:
-        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**\nRemoving bottom-right text...", parse_mode='Markdown')
+        status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**\n🔍 Smart scanning for text...", parse_mode='Markdown')
         await file.download_to_drive(input_path)
         
         if media_type == "photo":
-            perfect_photo_removal(input_path, output_path, brand_text)
+            hybrid_smart_photo_removal(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_photo(photo=open(output_path, 'rb'))
         else:
-            perfect_video_removal(input_path, output_path, brand_text)
+            hybrid_smart_video_removal(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_video(video=open(output_path, 'rb'))
             
@@ -163,10 +163,10 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await file.download_to_drive(input_path)
             if media_type == "photo":
-                perfect_photo_removal(input_path, output_path, brand_text)
+                hybrid_smart_photo_removal(input_path, output_path, brand_text)
                 output_media.append({'type': 'photo', 'media': open(output_path, 'rb')})
             else:
-                perfect_video_removal(input_path, output_path, brand_text)
+                hybrid_smart_video_removal(input_path, output_path, brand_text)
                 output_media.append({'type': 'video', 'media': open(output_path, 'rb')})
         except Exception as e:
             log_message(f"❌ Album Error: {e}")
@@ -180,38 +180,66 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(item['media'].name): os.remove(item['media'].name)
 
 # ==========================================
-# 🔥 HIGH-ACCURACY TEXT REMOVAL (NO MORE DETECTION MISTAKES)
+# 🔥 HYBRID SMART DETECTION + ERASE (BEST QUALITY)
 # ==========================================
 
-def perfect_photo_removal(input_path, output_path, new_text):
-    """
-    Instead of scanning for text, we manually focus on the bottom-right corner.
-    Uses OpenCV Inpainting to seamlessly remove the old text, then adds the new text.
-    """
+def hybrid_smart_photo_removal(input_path, output_path, new_text):
     img = cv2.imread(input_path)
     h, w, _ = img.shape
 
-    # 1. DEFINE THE BOTTOM-RIGHT AREA (Adjust these % if needed)
-    # We assume the watermark is in the bottom 15% and right 20% of the screen
-    crop_y = int(h * 0.85)  # Start at 85% height
-    crop_x = int(w * 0.80)  # Start at 80% width
-    box_h = h - crop_y
-    box_w = w - crop_x
-
-    # 2. CREATE MASK FOR INPAINTING
+    # 1. CROP THE BOTTOM 30% ONLY (This stops it from seeing "1mo" at the top)
+    crop_bottom = int(h * 0.30)
+    bottom_half = img[h - crop_bottom:h, 0:w]
+    
+    # 2. DETECT TEXT ONLY IN THE BOTTOM CROP
+    gray = cv2.cvtColor(bottom_half, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
+    data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
+    
     mask = np.zeros((h, w), dtype=np.uint8)
-    mask[crop_y:h, crop_x:w] = 255  # White area = text to remove
+    detected_coords = None
+    found = False
 
-    # 3. AI INPAINTING (Seamless removal)
+    for i in range(len(data['text'])):
+        if int(data['conf'][i]) > 30:
+            text = data['text'][i].strip()
+            if text:
+                # Adjust coordinates back to the full image
+                x = data['left'][i]
+                y = data['top'][i] + (h - crop_bottom)
+                w_box = data['width'][i]
+                h_box = data['height'][i]
+                
+                # Expand box to fully cover text
+                padding = 15
+                x = max(0, x - padding)
+                y = max(0, y - padding)
+                w_box = min(w - x, w_box + padding*2)
+                h_box = min(h - y, h_box + padding*2)
+                
+                mask[y:y+h_box, x:x+w_box] = 255
+                detected_coords = (x, y, w_box, h_box)
+                found = True
+                log_message(f"✅ Detected text '{text}' at {x},{y}")
+                break # Only take the first/largest text found
+
+    # 3. FALLBACK: If no text found, use bottom-right corner
+    if not found:
+        log_message("⚠️ No text found in bottom 30%, using bottom-right default.")
+        x = w - 400
+        y = h - 100
+        detected_coords = (x, y, 400, 100)
+        mask[y:y+100, x:x+400] = 255
+
+    # 4. AI INPAINTING TO ERASE TEXT
     cleaned_img = cv2.inpaint(img, mask, 5, cv2.INPAINT_TELEA)
 
-    # 4. ADD NEW TEXT
+    # 5. ADD NEW TEXT AT EXACT DETECTED POSITION
     pil_img = Image.fromarray(cv2.cvtColor(cleaned_img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_img)
     
     try:
-        # Font size proportional to image height
-        font_size = int(min(h, w) * 0.04) 
+        font_size = int(min(h, w) * 0.04)
         font = ImageFont.truetype("arial.ttf", font_size)
     except:
         font = ImageFont.load_default()
@@ -220,37 +248,63 @@ def perfect_photo_removal(input_path, output_path, new_text):
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
-    # Position at bottom-right with spacing
-    x = w - text_w - 20
-    y = h - text_h - 20
+    x, y, old_w, old_h = detected_coords
+    # Center the text inside the detected box
+    center_x = x + (old_w // 2) - (text_w // 2)
+    center_y = y + (old_h // 2) - (text_h // 2)
 
-    # Draw background for readability
-    draw.rectangle([x-10, y-10, x+text_w+10, y+text_h+10], fill=(0,0,0,180))
-    draw.text((x, y), new_text, font=font, fill="white")
+    draw.rectangle([center_x-10, center_y-10, center_x+text_w+10, center_y+text_h+10], fill=(0,0,0,180))
+    draw.text((center_x, center_y), new_text, font=font, fill="white")
     pil_img.save(output_path)
 
-def perfect_video_removal(input_path, output_path, new_text):
-    """
-    For videos, we use FFmpeg to draw a black patch over the bottom-right area,
-    completely erasing the old text, then overlays the new text.
-    """
+def hybrid_smart_video_removal(input_path, output_path, new_text):
+    cap = cv2.VideoCapture(input_path)
+    ret, first_frame = cap.read()
+    cap.release()
+    if not ret:
+        raise Exception("Could not read video")
+        
+    h, w, _ = first_frame.shape
+    
+    # 1. SCAN BOTTOM 30% OF FIRST FRAME ONLY
+    crop_bottom = int(h * 0.30)
+    bottom_half = first_frame[h - crop_bottom:h, 0:w]
+    gray = cv2.cvtColor(bottom_half, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
+    data = pytesseract.image_to_data(thresh, output_type=pytesseract.Output.DICT)
+    
+    coords = None
+    for i in range(len(data['text'])):
+        if int(data['conf'][i]) > 30:
+            text = data['text'][i].strip()
+            if text:
+                x = data['left'][i]
+                y = data['top'][i] + (h - crop_bottom)
+                w_box = data['width'][i]
+                h_box = data['height'][i]
+                coords = (x, y, w_box, h_box)
+                log_message(f"🎥 Video detected text '{text}'")
+                break
+    
+    if not coords:
+        log_message("⚠️ Video: No text found, using bottom-right default.")
+        coords = (w-400, h-100, 400, 100)
+    
+    x, y, w_box, h_box = coords
     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
     
-    # Fixed coordinates for bottom-right corner
-    # 15% from right, 15% from bottom (matches most Telegram watermarks)
-    w_perc = 0.20  # Width of the patch (20% of screen width)
-    h_perc = 0.15  # Height of the patch (15% of screen height)
-    x_perc = 0.80  # Start 80% from left
-    y_perc = 0.85  # Start 85% from top
-    
-    # The drawbox command creates a clean black rectangle over the old watermark
-    # The drawtext adds your brand right over it
+    x_perc = x / w
+    y_perc = y / h
+    w_perc = w_box / w
+    h_perc = h_box / h
+
+    # 2. PATCH + ADD NEW TEXT
     filter_complex = (
         f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
         f"[erased]drawtext=text='{safe_text}':"
         f"fontcolor=white:fontsize=35:"
         f"box=1:boxcolor=black@0.5:boxborderw=10:"
-        f"x=w-tw-20:y=h-th-20[out]"
+        f"x={x}:y={y}[out]"
     )
     
     cmd = [
@@ -334,7 +388,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
         <div class="footer">
-            Built with ❤️ | <a href="https://t.me/paid_promo0x" target="_blank"><b><i>Riyu 🫶🏼❤️</i></b></a>
+            Built with ❤️ 
         </div>
     </div>
 </body>
@@ -376,5 +430,5 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, process_album), group=1)
     
-    log_message("🤖 Bot started successfully (High Accuracy Mode)!")
+    log_message("🤖 Smart Hybrid Bot started successfully!")
     application.run_polling()
