@@ -7,17 +7,18 @@ import threading
 import time
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, render_template_string, jsonify
+
+# Telegram Bot imports (ALL fixed here)
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 
 # ==========================================
-# TESSERACT PATH (Simple and Clean)
+# TESSERACT PATH
 # ==========================================
 if os.name == 'nt':  # Windows
     pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
 else:  # Linux (Render / Docker)
     pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-# ==========================================
 
 # ==========================================
 # GLOBAL VARIABLES
@@ -45,7 +46,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     welcome_message = (
         f"👋 **Hello {user.first_name}!**\n\n"
-        f"🤖 I am your **Smart Brand Text Remover Bot**.\n"
+        f"🤖 I am your **Smart Brand/Watermark Text Remover Bot**.\n"
         f"I can automatically **detect, erase, and replace** any text or watermark on your photos and videos!\n\n"
         f"📌 **How to use me:**\n"
         f"1️⃣ Set your brand: `/setbrand t.me/yourchannel`\n"
@@ -86,7 +87,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "help":
-        # Send a new help message instead of calling the function directly
         help_text = (
             "🛠️ **How to use this Bot:**\n\n"
             "1. **Set your brand**: Use `/setbrand YourBrandName`\n"
@@ -101,7 +101,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(help_text, parse_mode='Markdown')
 
 # ==========================================
-# BOT COMMANDS (SET BRAND & MEDIA)
+# BOT COMMANDS
 # ==========================================
 async def set_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -384,7 +384,7 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 Brand Text Remover Bot</h1>
+            <h1>🤖Brand Watermsrk Remover </h1>
             <div><span class="status-badge">🟢 Online</span></div>
         </div>
         <div class="stats-grid">
@@ -415,7 +415,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
         <div class="footer">
-            Built with ❤️ | <a href="https://t.me/YOUR_BOT_USERNAME" target="_blank">@YourBot</a>
+            Built with ❤️ | <a href="https://t.me/paid_promo0x" target="_blank"><i>Riyu 🫶🏼</i></a>
         </div>
     </div>
 </body>
@@ -472,8 +472,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("setbrand", set_brand))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, process_album), group=1)
-    
-    # ✅ FIXED: Use CallbackQueryHandler instead of filters.CallbackQuery
     application.add_handler(CallbackQueryHandler(button_callback))
     
     log_message("🤖 Telegram Bot started successfully with /start greeting!")
