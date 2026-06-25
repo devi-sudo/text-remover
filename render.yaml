@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: brand-bot
+    env: python
+    buildCommand: |
+      apt-get update
+      apt-get install -y tesseract-ocr ffmpeg
+      pip install -r requirements.txt
+    startCommand: python app.py
