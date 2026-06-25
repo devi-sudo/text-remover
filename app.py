@@ -404,7 +404,7 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
     filter_complex = (
         f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
         f"[erased]drawtext=text='{safe_text}':"
-        f"fontcolor=yellow:fontsize=35:"
+        f"fontcolor=white:fontsize=34:"
         f"box=1:boxcolor=black@0.5:boxborderw=10:"
         f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
         f"x={x}:y={y}[out]"
