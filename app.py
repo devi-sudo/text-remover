@@ -334,7 +334,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
         <div class="footer">
-            Built with ❤️ | <a href="https://t.me/YOUR_BOT_USERNAME" target="_blank">@YourBot</a>
+            Built with ❤️ | <a href="https://t.me/paid_promo0x" target="_blank"><b><i>Riyu 🫶🏼❤️</i></b></a>
         </div>
     </div>
 </body>
