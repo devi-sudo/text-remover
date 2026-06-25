@@ -265,13 +265,34 @@ def smart_remove_and_replace_video(input_path, output_path, new_text):
 # ==========================================
 # MAIN
 # ==========================================
+# ==========================================
+# MAIN
+# ==========================================
 if __name__ == "__main__":
     TOKEN = os.environ.get("BOT_TOKEN")
     
-    # If TOKEN is missing, stop and show error in logs
     if not TOKEN:
         print("❌ Error: BOT_TOKEN environment variable is not set!")
         exit(1)
+
+    # ==========================================
+    # 🚀 RENDER FIX: Start a dummy web server on port 10000
+    # ==========================================
+    import threading
+    from flask import Flask
+    
+    app_web = Flask(__name__)
+    
+    @app_web.route('/')
+    def home():
+        return "Hello Boss"
+        
+    def run_web():
+        app_web.run(host='0.0.0.0', port=10000)
+        
+    # Start the dummy web server in a separate thread
+    threading.Thread(target=run_web, daemon=True).start()
+    # ==========================================
 
     application = Application.builder().token(TOKEN).build()
     
@@ -279,5 +300,5 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, process_album), group=1)
     
-    print("🤖 Bot Running on Render...")
+    print("🤖 Bot Running on Render... (Port 10000 open)")
     application.run_polling()
