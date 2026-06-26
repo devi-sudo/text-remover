@@ -422,6 +422,7 @@ def pixel_perfect_removal(input_path, output_path, new_text):
 #     subprocess.run(cmd, check=True)
 #     gc.collect()
 def pixel_perfect_video_removal(input_path, output_path, new_text):
+    # 1. OPEN THE VIDEO ONCE TO SCAN THE FIRST FRAME
     cap = cv2.VideoCapture(input_path)
     ret, first_frame = cap.read()
     
@@ -432,6 +433,7 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
     h, w, _ = first_frame.shape
     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
     
+    # 2. DETECT BLUE ICON ONLY ON FIRST FRAME
     hsv = cv2.cvtColor(first_frame, cv2.COLOR_BGR2HSV)
     lower_blue = np.array([95, 100, 100])
     upper_blue = np.array([125, 255, 255])
@@ -454,57 +456,30 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
         w_box = 400
         h_box = 100
     
-    cap.release()
-    first_frame = None
-    
-    # ==========================================
-    # 🚀 LIGHTNING FAST METHOD (Uses overlay, NOT re-encoding)
-    # ==========================================
-    # Step A: Create a temporary transparent PNG overlay with the exact Black Box + Text
-    overlay_img = Image.new('RGBA', (w, h), (0, 0, 0, 0))  # Fully transparent
-    draw = ImageDraw.Draw(overlay_img)
-    
-    # Draw Black Box (Same as your original settings)
-    draw.rectangle([x, y, x + w_box, y + h_box], fill=(0, 0, 0, 200))
-    
-    # Draw White Text on top of it (Same as your original settings)
-    font_size = 34
-    try:
-        font = ImageFont.truetype("arialbd.ttf", font_size)
-    except:
-        font = ImageFont.load_default()
-        
-    bbox = draw.textbbox((0, 0), safe_text, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
-    
-    center_x = x + (w_box // 2) - (text_w // 2)
-    center_y = y + (h_box // 2) - (text_h // 2)
-    
-    draw.text((center_x, center_y), safe_text, font=font, fill="white")
-    
-    # Save the overlay image
-    overlay_path = f"{input_path}_watermark.png"
-    overlay_img.save(overlay_path)
-    
-    # Step B: Use FFmpeg to Overlay the image over the video WITH fast encoding
+    cap.release()  # ✅ We are DONE scanning! Now close the file.
+
+    # 3. PASS X, Y, W, H DIRECTLY TO FFMPEG (Native, Super Fast)
+    # drawbox: Black box over the old text.
+    # drawtext: White text over that box, positioned at x, y.
+    filter_complex = (
+        f"[0:v]drawbox=w={w_box}:h={h_box}:x={x}:y={y}:color=black:t=fill[erased];"
+        f"[erased]drawtext=text='{safe_text}':"
+        f"fontcolor=white:fontsize=35:"
+        f"box=1:boxcolor=black@0.5:boxborderw=10:"
+        f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+        f"x={x}:y={y}[out]"
+    )
     cmd = [
         "ffmpeg", "-i", input_path,
-        "-i", overlay_path,
-        "-filter_complex", "[0:v][1:v]overlay=0:0", # Overlay the watermark over the whole frame
-        "-c:v", "libx264", "-crf", "23", "-preset", "fast", # Fast encoding
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        "-map", "0:a?",
         "-c:a", "copy",
+        "-preset", "fast",
         "-y", output_path
     ]
-    
     subprocess.run(cmd, check=True)
-    
-    # Cleanup
-    if os.path.exists(overlay_path):
-        os.remove(overlay_path)
-    
     gc.collect()
-
 # ==========================================
 # 🎨 FLASK DASHBOARD
 # ==========================================
