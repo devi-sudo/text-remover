@@ -270,7 +270,7 @@ async def process_single_file(update, context, user_id, brand_text, message):
                 raise Exception(stderr.decode())
             
             final_time = time.time() - start_time
-            await status_msg.edit_text(f"✅ **Processed in {final_time:.2f}s**")
+            await status_msg.edit_text(f"✅ *Processed in {final_time:.2f}s*")
             await asyncio.sleep(1)
             
             await status_msg.delete()
@@ -294,8 +294,23 @@ async def process_single_file(update, context, user_id, brand_text, message):
         
 async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     album_id = update.message.media_group_id
-    if 'albums' not in context.bot_data:
+    
+    # If album data doesn't exist yet, just return
+    if 'albums' not in context.bot_data or album_id not in context.bot_data['albums']:
         return
+        
+    # ⚡ CRITICAL FIX: Prevent multiple process triggers
+    # If this album is already being processed, ignore this redundant trigger
+    if context.bot_data['albums'][album_id].get('processing', False):
+        return
+    
+    # Mark this album as being processed so other messages don't trigger it again
+    context.bot_data['albums'][album_id]['processing'] = True
+    
+    # ⏳ Wait 2 seconds to allow ALL files in the album to be collected by Telegram
+    await asyncio.sleep(2)
+    
+    # Now safely pop the entire album data
     album_data = context.bot_data['albums'].pop(album_id, None)
     if not album_data:
         return
@@ -340,18 +355,16 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if media_type == "photo":
                 pixel_perfect_removal(input_path, output_path, brand_text)
-                # ✅ FIXED: Use InputMediaPhoto object, NOT a dictionary
                 output_media.append(InputMediaPhoto(media=open(output_path, 'rb')))
                 await status_msg.edit_text(
-                    f"📦 **Processing album...**\n{idx} / {total} files done (Photo)"
+                    f"📦 *Processing album...*\n{idx} / {total} files done (Photo)"
                 )
 
             else:
                 cmd = pixel_perfect_video_removal(input_path, output_path, brand_text)
-
                 start_time = time.time()
                 await status_msg.edit_text(
-                    f"📦 **Processing album...**\nFile {idx}/{total} (Video)\n⏳ Elapsed: 0.0s"
+                    f"📦 *Processing album...*\nFile {idx}/{total} (Video)\n⏳ Elapsed: 0.0s"
                 )
 
                 process = await asyncio.create_subprocess_exec(
@@ -362,7 +375,7 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 while process.returncode is None and (time.time() - start_time) < timeout:
                     elapsed = time.time() - start_time
                     await status_msg.edit_text(
-                        f"📦 **Processing album...**\nFile {idx}/{total} (Video)\n⏳ Elapsed: {elapsed:.1f}s"
+                        f"📦 *Processing album...*\nFile {idx}/{total} (Video)\n⏳ Elapsed: {elapsed:.1f}s"
                     )
                     await asyncio.sleep(1)
 
@@ -377,16 +390,18 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 final_time = time.time() - start_time
                 await status_msg.edit_text(
-                    f"📦 **Processing album...**\nFile {idx}/{total} (Video) ✅ {final_time:.1f}s\n{idx} / {total} files done"
+                    f"📦 *Processing album...*\nFile {idx}/{total} (Video) ✅ {final_time:.1f}s\n{idx} / {total} files done"
                 )
                 await asyncio.sleep(0.5)
 
-                # ✅ FIXED: Use InputMediaVideo object, NOT a dictionary
                 output_media.append(InputMediaVideo(media=open(output_path, 'rb')))
 
+        except TimeoutError as e:
+            log_message(f"⏱️ Timeout on album file {idx}: {e}")
+            await status_msg.edit_text(f"❌ **Skipping file {idx}:** Video took >5 min. Continuing with rest.")
+            await asyncio.sleep(1)
         except Exception as e:
             log_message(f"❌ Album Error on file {idx}: {e}")
-            # If we hit a timeout, we stop processing this file and skip it
             await status_msg.edit_text(f"❌ **Error on file {idx}:** {str(e)[:50]}... Skipping.")
             await asyncio.sleep(1)
         finally:
@@ -394,15 +409,20 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try: os.remove(input_path)
                 except: pass
 
+    # 🚀 SEND BACK AS A SINGLE ALBUM
     if output_media:
         await status_msg.delete()
-        # ✅ Now sends perfectly because we have proper InputMedia objects
-        await update.message.reply_media_group(media=output_media)
-        
-        for item in output_media:
-            if os.path.exists(item.media.name):  # Note: item.media, not item['media']
-                try: os.remove(item.media.name)
-                except: pass
+        try:
+            # This sends all media in one single album group!
+            await update.message.reply_media_group(media=output_media)
+        except Exception as e:
+            log_message(f"❌ Failed to send album: {e}")
+            await update.message.reply_text("❌ Failed to send the album. Try sending files one by one.")
+        finally:
+            for item in output_media:
+                if hasattr(item, 'media') and os.path.exists(item.media.name):
+                    try: os.remove(item.media.name)
+                    except: pass
 
     cv2.destroyAllWindows()
     gc.collect()
