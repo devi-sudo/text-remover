@@ -421,7 +421,6 @@ def pixel_perfect_removal(input_path, output_path, new_text):
 #     ]
 #     subprocess.run(cmd, check=True)
 #     gc.collect()
-
 def pixel_perfect_video_removal(input_path, output_path, new_text):
     cap = cv2.VideoCapture(input_path)
     ret, first_frame = cap.read()
@@ -458,23 +457,18 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
     cap.release()
     first_frame = None
     
-    # NO NEED FOR PERCENTAGES. We use exact pixels.
-    
     # ==========================================
     # 🚀 LIGHTNING FAST METHOD (Uses overlay, NOT re-encoding)
     # ==========================================
-    # 1. FFmpeg will create a single "Watermark" PNG image containing the Black Box + Yellow Text
-    # 2. It will overlay that single image over the video IN REAL-TIME without re-encoding.
-    
-    # Step A: Create a temporary image (watermark.png)
+    # Step A: Create a temporary transparent PNG overlay with the exact Black Box + Text
     overlay_img = Image.new('RGBA', (w, h), (0, 0, 0, 0))  # Fully transparent
     draw = ImageDraw.Draw(overlay_img)
     
-    # Draw Black Box
+    # Draw Black Box (Same as your original settings)
     draw.rectangle([x, y, x + w_box, y + h_box], fill=(0, 0, 0, 200))
     
-    # Draw Yellow Text on top of it
-    font_size = int(min(h, w) * 0.04)
+    # Draw White Text on top of it (Same as your original settings)
+    font_size = 34
     try:
         font = ImageFont.truetype("arialbd.ttf", font_size)
     except:
@@ -489,14 +483,15 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
     
     draw.text((center_x, center_y), safe_text, font=font, fill="white")
     
+    # Save the overlay image
     overlay_path = f"{input_path}_watermark.png"
     overlay_img.save(overlay_path)
     
-    # Step B: Use FFmpeg to Overlay the image over the video WITHOUT re-encoding
+    # Step B: Use FFmpeg to Overlay the image over the video WITH fast encoding
     cmd = [
         "ffmpeg", "-i", input_path,
         "-i", overlay_path,
-        "-filter_complex", "[0:v][1:v]overlay=0:0", # Overlay at 0,0 (top-left, which covers the whole screen)
+        "-filter_complex", "[0:v][1:v]overlay=0:0", # Overlay the watermark over the whole frame
         "-c:v", "libx264", "-crf", "23", "-preset", "fast", # Fast encoding
         "-c:a", "copy",
         "-y", output_path
@@ -509,7 +504,6 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
         os.remove(overlay_path)
     
     gc.collect()
-
 
 # ==========================================
 # 🎨 FLASK DASHBOARD
