@@ -10,7 +10,7 @@ import asyncio
 import shutil
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, render_template_string, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ==========================================
@@ -245,10 +245,8 @@ async def process_single_file(update, context, user_id, brand_text, message):
             await message.reply_photo(photo=open(output_path, 'rb'))
             
         else:
-            # Get the command list from the video function
             cmd = pixel_perfect_video_removal(input_path, output_path, brand_text)
             
-            # Start the timer and FFmpeg process ASYNCHRONOUSLY
             start_time = time.time()
             await status_msg.edit_text(f"⏳ **Processing Video...**\n🎬 Detecting Watermark.. (Elapsed: 0.0s)")
             
@@ -256,38 +254,44 @@ async def process_single_file(update, context, user_id, brand_text, message):
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             
-            # 🔄 LIVE UPDATES: Update status every 1 second until FFmpeg finishes
-            while process.returncode is None:
+            timeout = 300  # 5 minutes
+            while process.returncode is None and (time.time() - start_time) < timeout:
                 elapsed = time.time() - start_time
                 await status_msg.edit_text(f"⏳ **Processing Video...**\n🎬 Applying Watermark.. (Elapsed: {elapsed:.1f}s)")
                 await asyncio.sleep(1)
             
-            # Wait for the process to fully finish and check for errors
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+                raise TimeoutError(f"Video processing exceeded {timeout} seconds.")
+            
             stdout, stderr = await process.communicate()
             if process.returncode != 0:
                 raise Exception(stderr.decode())
             
-            # ✅ FINAL TIME: Show exact processing time
             final_time = time.time() - start_time
             await status_msg.edit_text(f"✅ **Processed in {final_time:.2f}s**")
-            await asyncio.sleep(1)  # Let the user read the time
+            await asyncio.sleep(1)
             
             await status_msg.delete()
             await message.reply_video(video=open(output_path, 'rb'))
             
+    except TimeoutError as e:
+        log_message(f"⏱️ Timeout for User {user_id}: {e}")
+        await message.reply_text(f"❌ **Error:** The video took too long to process (>5 min). Try a shorter video or upgrade Render plan.", parse_mode='Markdown')
     except Exception as e:
         log_message(f"❌ Error for User {user_id}: {e}")
         await message.reply_text(f"❌ **Error:** {e}\n\nTry uploading a smaller file or clearing your brand with `/clearbrand` and trying again.", parse_mode='Markdown')
     finally:
         for path in [input_path, output_path]:
-            if os.path.exists(path): 
+            if os.path.exists(path):
                 try:
                     os.remove(path)
                 except:
                     pass
         cv2.destroyAllWindows()
         gc.collect()
-
+        
 async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     album_id = update.message.media_group_id
     if 'albums' not in context.bot_data:
@@ -335,15 +339,14 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await file.download_to_drive(input_path)
 
             if media_type == "photo":
-                # Photos process instantly
                 pixel_perfect_removal(input_path, output_path, brand_text)
-                output_media.append({'type': 'photo', 'media': open(output_path, 'rb')})
+                # ✅ FIXED: Use InputMediaPhoto object, NOT a dictionary
+                output_media.append(InputMediaPhoto(media=open(output_path, 'rb')))
                 await status_msg.edit_text(
                     f"📦 **Processing album...**\n{idx} / {total} files done (Photo)"
                 )
 
             else:
-                # Video processing with live timer
                 cmd = pixel_perfect_video_removal(input_path, output_path, brand_text)
 
                 start_time = time.time()
@@ -351,15 +354,11 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📦 **Processing album...**\nFile {idx}/{total} (Video)\n⏳ Elapsed: 0.0s"
                 )
 
-                # Run FFmpeg asynchronously
                 process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
 
-                # Live timer loop, with a 5‑minute timeout
-                timeout = 300  # seconds (5 minutes)
+                timeout = 300
                 while process.returncode is None and (time.time() - start_time) < timeout:
                     elapsed = time.time() - start_time
                     await status_msg.edit_text(
@@ -367,51 +366,46 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     await asyncio.sleep(1)
 
-                # If timeout exceeded, kill the process and raise error
                 if process.returncode is None:
                     process.kill()
                     await process.wait()
                     raise TimeoutError(f"Video processing exceeded {timeout} seconds.")
 
-                # Wait for process to finish and check for errors
                 stdout, stderr = await process.communicate()
                 if process.returncode != 0:
                     raise Exception(stderr.decode())
 
-                # Done with this video
                 final_time = time.time() - start_time
                 await status_msg.edit_text(
                     f"📦 **Processing album...**\nFile {idx}/{total} (Video) ✅ {final_time:.1f}s\n{idx} / {total} files done"
                 )
                 await asyncio.sleep(0.5)
 
-                output_media.append({'type': 'video', 'media': open(output_path, 'rb')})
+                # ✅ FIXED: Use InputMediaVideo object, NOT a dictionary
+                output_media.append(InputMediaVideo(media=open(output_path, 'rb')))
 
         except Exception as e:
             log_message(f"❌ Album Error on file {idx}: {e}")
-            # Optionally notify the user, but we continue with remaining files
-            # await update.message.reply_text(f"❌ Error on file {idx}: {e}")
+            # If we hit a timeout, we stop processing this file and skip it
+            await status_msg.edit_text(f"❌ **Error on file {idx}:** {str(e)[:50]}... Skipping.")
+            await asyncio.sleep(1)
         finally:
             if os.path.exists(input_path):
-                try:
-                    os.remove(input_path)
-                except:
-                    pass
+                try: os.remove(input_path)
+                except: pass
 
     if output_media:
         await status_msg.delete()
+        # ✅ Now sends perfectly because we have proper InputMedia objects
         await update.message.reply_media_group(media=output_media)
-        # Cleanup output files after sending
+        
         for item in output_media:
-            if os.path.exists(item['media'].name):
-                try:
-                    os.remove(item['media'].name)
-                except:
-                    pass
+            if os.path.exists(item.media.name):  # Note: item.media, not item['media']
+                try: os.remove(item.media.name)
+                except: pass
 
     cv2.destroyAllWindows()
     gc.collect()
-
 # ==========================================
 # 🎯 PIXEL-PERFECT REMOVAL
 # ==========================================
