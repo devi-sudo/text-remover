@@ -466,7 +466,6 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
         f"[erased]drawtext=text='{safe_text}':"
         f"fontcolor=white:fontsize=35:"
         f"box=1:boxcolor=black@0.5:boxborderw=10:"
-        f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
         f"x={x}:y={y}[out]"
     )
      cmd = [
