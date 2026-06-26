@@ -469,13 +469,14 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
         f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
         f"x={x}:y={y}[out]"
     )
-    cmd = [
+     cmd = [
         "ffmpeg", "-i", input_path,
         "-filter_complex", filter_complex,
         "-map", "[out]",
         "-map", "0:a?",
         "-c:a", "copy",
-        "-preset", "fast",
+        "-preset", "ultrafast",   # ⚡ The biggest speed boost
+        "-crf", "28",             # Speeds up encoding by relaxing quality slightly
         "-y", output_path
     ]
     subprocess.run(cmd, check=True)
