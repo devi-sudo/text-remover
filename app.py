@@ -290,20 +290,29 @@ async def process_single_file(update, context, user_id, brand_text, message):
 
 async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     album_id = update.message.media_group_id
-    if 'albums' not in context.bot_data: return
+    if 'albums' not in context.bot_data:
+        return
     album_data = context.bot_data['albums'].pop(album_id, None)
-    if not album_data: return
+    if not album_data:
+        return
 
     user_id = album_data['user_id']
     brand_text = context.user_data.get('brand', None)
-    if not brand_text: return
+    if not brand_text:
+        return
 
     messages = album_data['files']
-    log_message(f"📦 Processing Album with {len(messages)} files for User {user_id}")
-    status_msg = await update.message.reply_text(f"📦 **it takes time go and take shower!**\nProcessing {len(messages)} files...", parse_mode='Markdown')
+    total = len(messages)
+    log_message(f"📦 Processing Album with {total} files for User {user_id}")
+
+    status_msg = await update.message.reply_text(
+        f"📦 **Processing album...**\n0 / {total} files done",
+        parse_mode='Markdown'
+    )
 
     output_media = []
-    for idx, message in enumerate(messages):
+
+    for idx, message in enumerate(messages, start=1):
         file = None
         ext = ""
         media_type = ""
@@ -315,23 +324,75 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file = await message.photo[-1].get_file()
             ext = ".jpg"
             media_type = "photo"
-        
+        else:
+            continue
+
         unique_id = f"album_{album_id}_{user_id}_{idx}"
         input_path = f"{unique_id}_input{ext}"
         output_path = f"{unique_id}_output{ext}"
-        
+
         try:
             await file.download_to_drive(input_path)
+
             if media_type == "photo":
+                # Photos process instantly
                 pixel_perfect_removal(input_path, output_path, brand_text)
                 output_media.append({'type': 'photo', 'media': open(output_path, 'rb')})
+                await status_msg.edit_text(
+                    f"📦 **Processing album...**\n{idx} / {total} files done (Photo)"
+                )
+
             else:
-                pixel_perfect_video_removal(input_path, output_path, brand_text)
+                # Video processing with live timer
+                cmd = pixel_perfect_video_removal(input_path, output_path, brand_text)
+
+                start_time = time.time()
+                await status_msg.edit_text(
+                    f"📦 **Processing album...**\nFile {idx}/{total} (Video)\n⏳ Elapsed: 0.0s"
+                )
+
+                # Run FFmpeg asynchronously
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+
+                # Live timer loop, with a 5‑minute timeout
+                timeout = 300  # seconds (5 minutes)
+                while process.returncode is None and (time.time() - start_time) < timeout:
+                    elapsed = time.time() - start_time
+                    await status_msg.edit_text(
+                        f"📦 **Processing album...**\nFile {idx}/{total} (Video)\n⏳ Elapsed: {elapsed:.1f}s"
+                    )
+                    await asyncio.sleep(1)
+
+                # If timeout exceeded, kill the process and raise error
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+                    raise TimeoutError(f"Video processing exceeded {timeout} seconds.")
+
+                # Wait for process to finish and check for errors
+                stdout, stderr = await process.communicate()
+                if process.returncode != 0:
+                    raise Exception(stderr.decode())
+
+                # Done with this video
+                final_time = time.time() - start_time
+                await status_msg.edit_text(
+                    f"📦 **Processing album...**\nFile {idx}/{total} (Video) ✅ {final_time:.1f}s\n{idx} / {total} files done"
+                )
+                await asyncio.sleep(0.5)
+
                 output_media.append({'type': 'video', 'media': open(output_path, 'rb')})
+
         except Exception as e:
-            log_message(f"❌ Album Error: {e}")
+            log_message(f"❌ Album Error on file {idx}: {e}")
+            # Optionally notify the user, but we continue with remaining files
+            # await update.message.reply_text(f"❌ Error on file {idx}: {e}")
         finally:
-            if os.path.exists(input_path): 
+            if os.path.exists(input_path):
                 try:
                     os.remove(input_path)
                 except:
@@ -340,8 +401,9 @@ async def process_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if output_media:
         await status_msg.delete()
         await update.message.reply_media_group(media=output_media)
+        # Cleanup output files after sending
         for item in output_media:
-            if os.path.exists(item['media'].name): 
+            if os.path.exists(item['media'].name):
                 try:
                     os.remove(item['media'].name)
                 except:
@@ -357,6 +419,7 @@ def pixel_perfect_removal(input_path, output_path, new_text):
     img = cv2.imread(input_path)
     h, w, _ = img.shape
 
+    # 1. DETECT BLUE ICON
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     lower_blue = np.array([95, 100, 100])
     upper_blue = np.array([125, 255, 255])
@@ -368,8 +431,12 @@ def pixel_perfect_removal(input_path, output_path, new_text):
     if contours:
         largest_contour = max(contours, key=cv2.contourArea)
         x, y, w_box, h_box = cv2.boundingRect(largest_contour)
-        expand_right = int(w_box * 2.5)
-        padding = 10
+        
+        # ✅ BETTER: Calculate expansion dynamically. 
+        # Since we don't know the exact text width, we expand 3x to the right.
+        expand_right = int(w_box * 3.0) 
+        padding = 20  # Increased padding for better inpainting
+        
         x = max(0, x - padding)
         y = max(0, y - padding)
         w_box = min(w - x, w_box + expand_right + padding)
@@ -377,7 +444,7 @@ def pixel_perfect_removal(input_path, output_path, new_text):
         detected_coords = (x, y, w_box, h_box)
         
     else:
-        # Fallback text detection
+        # 2. FALLBACK: Tesseract on bottom 30%
         crop_bottom = int(h * 0.30)
         bottom_half = img[h - crop_bottom:h, 0:w]
         gray = cv2.cvtColor(bottom_half, cv2.COLOR_BGR2GRAY)
@@ -392,7 +459,7 @@ def pixel_perfect_removal(input_path, output_path, new_text):
                     y = data['top'][i] + (h - crop_bottom)
                     w_box = data['width'][i]
                     h_box = data['height'][i]
-                    padding = 15
+                    padding = 20
                     x = max(0, x - padding)
                     y = max(0, y - padding)
                     w_box = min(w - x, w_box + padding*2)
@@ -400,24 +467,36 @@ def pixel_perfect_removal(input_path, output_path, new_text):
                     detected_coords = (x, y, w_box, h_box)
                     break
 
+    # 3. ULTIMATE FALLBACK
     if not detected_coords:
-        x = w - 400
-        y = h - 100
-        detected_coords = (x, y, 400, 100)
+        x = w - 450
+        y = h - 120
+        detected_coords = (x, y, 450, 120)
 
     x, y, w_box, h_box = detected_coords
+
+    # 4. CREATE MASK & 🔥 BETTER INPAINTING (NS Algorithm + Larger Radius)
     inpaint_mask = np.zeros((h, w), dtype=np.uint8)
     inpaint_mask[y:y+h_box, x:x+w_box] = 255
 
-    cleaned_img = cv2.inpaint(img, inpaint_mask, 5, cv2.INPAINT_TELEA)
+    # Changed to INPAINT_NS and increased radius to 10
+    cleaned_img = cv2.inpaint(img, inpaint_mask, 10, cv2.INPAINT_NS)
 
+    # 5. ADD TEXT WITH PROFESSIONAL BACKGROUND
     pil_img = Image.fromarray(cv2.cvtColor(cleaned_img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_img)
     
     font_size = int(min(h, w) * 0.04)
-    try:
-        font = ImageFont.truetype("arialbd.ttf", font_size)
-    except:
+    
+    # Robust font fallback chain
+    font = None
+    for font_name in ["arialbd.ttf", "arial.ttf", "DejaVuSans-Bold.ttf"]:
+        try:
+            font = ImageFont.truetype(font_name, font_size)
+            break
+        except:
+            continue
+    if font is None:
         font = ImageFont.load_default()
         
     bbox = draw.textbbox((0, 0), new_text, font=font)
@@ -427,6 +506,15 @@ def pixel_perfect_removal(input_path, output_path, new_text):
     center_x = x + (w_box // 2) - (text_w // 2)
     center_y = y + (h_box // 2) - (text_h // 2)
 
+    # ✅ Add a sleek semi-transparent background box for readability
+    padding_bg = 12
+    draw.rectangle([
+        center_x - padding_bg, 
+        center_y - padding_bg, 
+        center_x + text_w + padding_bg, 
+        center_y + text_h + padding_bg
+    ], fill=(0, 0, 0, 180))
+    
     draw.text((center_x, center_y), new_text, font=font, fill="white")
     pil_img.save(output_path)
     
