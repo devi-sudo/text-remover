@@ -360,6 +360,68 @@ def pixel_perfect_removal(input_path, output_path, new_text):
     del img, cleaned_img, pil_img, draw
     gc.collect()
 
+# def pixel_perfect_video_removal(input_path, output_path, new_text):
+#     cap = cv2.VideoCapture(input_path)
+#     ret, first_frame = cap.read()
+    
+#     if not ret:
+#         cap.release()
+#         raise Exception("Could not read video")
+        
+#     h, w, _ = first_frame.shape
+#     safe_text = new_text.replace("'", r"\'").replace(":", r"\:")
+    
+#     hsv = cv2.cvtColor(first_frame, cv2.COLOR_BGR2HSV)
+#     lower_blue = np.array([95, 100, 100])
+#     upper_blue = np.array([125, 255, 255])
+#     mask = cv2.inRange(hsv, lower_blue, upper_blue)
+#     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+#     x, y, w_box, h_box = 0, 0, 0, 0
+    
+#     if contours:
+#         largest_contour = max(contours, key=cv2.contourArea)
+#         x, y, w_box, h_box = cv2.boundingRect(largest_contour)
+#         expand_right = int(w_box * 2.5)
+#         x = max(0, x - 10)
+#         y = max(0, y - 10)
+#         w_box = min(w - x, w_box + expand_right + 10)
+#         h_box = min(h - y, h_box + 20)
+#     else:
+#         x = w - 400
+#         y = h - 100
+#         w_box = 400
+#         h_box = 100
+    
+#     cap.release()
+#     first_frame = None
+    
+#     x_perc = x / w
+#     y_perc = y / h
+#     w_perc = w_box / w
+#     h_perc = h_box / h
+
+#     filter_complex = (
+#         f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
+#         f"[erased]drawtext=text='{safe_text}':"
+#         f"fontcolor=white:fontsize=34:"
+#         f"box=1:boxcolor=black@0.5:boxborderw=10:"
+#         f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+#         f"x={x}:y={y}[out]"
+#     )
+    
+#     cmd = [
+#         "ffmpeg", "-i", input_path,
+#         "-filter_complex", filter_complex,
+#         "-map", "[out]",
+#         "-map", "0:a?",
+#         "-c:a", "copy",
+#         "-preset", "fast",
+#         "-y", output_path
+#     ]
+#     subprocess.run(cmd, check=True)
+#     gc.collect()
+
 def pixel_perfect_video_removal(input_path, output_path, new_text):
     cap = cv2.VideoCapture(input_path)
     ret, first_frame = cap.read()
@@ -396,31 +458,58 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
     cap.release()
     first_frame = None
     
-    x_perc = x / w
-    y_perc = y / h
-    w_perc = w_box / w
-    h_perc = h_box / h
-
-    filter_complex = (
-        f"[0:v]drawbox=w={w_perc}*iw:h={h_perc}*ih:x={x_perc}*iw:y={y_perc}*ih:color=black:t=fill[erased];"
-        f"[erased]drawtext=text='{safe_text}':"
-        f"fontcolor=white:fontsize=34:"
-        f"box=1:boxcolor=black@0.5:boxborderw=10:"
-        f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-        f"x={x}:y={y}[out]"
-    )
+    # NO NEED FOR PERCENTAGES. We use exact pixels.
     
+    # ==========================================
+    # 🚀 LIGHTNING FAST METHOD (Uses overlay, NOT re-encoding)
+    # ==========================================
+    # 1. FFmpeg will create a single "Watermark" PNG image containing the Black Box + Yellow Text
+    # 2. It will overlay that single image over the video IN REAL-TIME without re-encoding.
+    
+    # Step A: Create a temporary image (watermark.png)
+    overlay_img = Image.new('RGBA', (w, h), (0, 0, 0, 0))  # Fully transparent
+    draw = ImageDraw.Draw(overlay_img)
+    
+    # Draw Black Box
+    draw.rectangle([x, y, x + w_box, y + h_box], fill=(0, 0, 0, 200))
+    
+    # Draw Yellow Text on top of it
+    font_size = int(min(h, w) * 0.04)
+    try:
+        font = ImageFont.truetype("arialbd.ttf", font_size)
+    except:
+        font = ImageFont.load_default()
+        
+    bbox = draw.textbbox((0, 0), safe_text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    
+    center_x = x + (w_box // 2) - (text_w // 2)
+    center_y = y + (h_box // 2) - (text_h // 2)
+    
+    draw.text((center_x, center_y), safe_text, font=font, fill="white")
+    
+    overlay_path = f"{input_path}_watermark.png"
+    overlay_img.save(overlay_path)
+    
+    # Step B: Use FFmpeg to Overlay the image over the video WITHOUT re-encoding
     cmd = [
         "ffmpeg", "-i", input_path,
-        "-filter_complex", filter_complex,
-        "-map", "[out]",
-        "-map", "0:a?",
+        "-i", overlay_path,
+        "-filter_complex", "[0:v][1:v]overlay=0:0", # Overlay at 0,0 (top-left, which covers the whole screen)
+        "-c:v", "libx264", "-crf", "23", "-preset", "fast", # Fast encoding
         "-c:a", "copy",
-        "-preset", "fast",
         "-y", output_path
     ]
+    
     subprocess.run(cmd, check=True)
+    
+    # Cleanup
+    if os.path.exists(overlay_path):
+        os.remove(overlay_path)
+    
     gc.collect()
+
 
 # ==========================================
 # 🎨 FLASK DASHBOARD
