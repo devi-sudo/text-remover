@@ -167,6 +167,54 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await process_single_file(update, context, user_id, brand_text, message)
 
+# async def process_single_file(update, context, user_id, brand_text, message):
+#     file = None
+#     ext = ""
+#     media_type = ""
+
+#     if message.video:
+#         file = await message.video.get_file()
+#         ext = ".mp4"
+#         media_type = "video"
+#     elif message.photo:
+#         file = await message.photo[-1].get_file()
+#         ext = ".jpg"
+#         media_type = "photo"
+#     else:
+#         return
+
+#     unique_id = f"{user_id}_{int(time.time() * 1000)}"
+#     input_path = f"{unique_id}_input{ext}"
+#     output_path = f"{unique_id}_output{ext}"
+
+#     try:
+#         status_msg = await message.reply_text(f"⏳ **Processing {media_type}...**", parse_mode='Markdown')
+#         await file.download_to_drive(input_path)
+        
+#         if media_type == "photo":
+#             pixel_perfect_removal(input_path, output_path, brand_text)
+#             await status_msg.delete()
+#             await message.reply_photo(photo=open(output_path, 'rb'))
+#         else:
+#             # Video progress simulation (just a status update)
+#             await status_msg.edit_text(f"⏳ **Processing Video...**\n🎬 Detecting Watermark ..")
+#             pixel_perfect_video_removal(input_path, output_path, brand_text)
+#             await status_msg.delete()
+#             await message.reply_video(video=open(output_path, 'rb'))
+            
+#     except Exception as e:
+#         log_message(f"❌ Error for User {user_id}: {e}")
+#         await message.reply_text(f"❌ **Error:** {e}\n\nTry uploading a smaller file or clearing your brand with `/clearbrand` and trying again.", parse_mode='Markdown')
+#     finally:
+#         for path in [input_path, output_path]:
+#             if os.path.exists(path): 
+#                 try:
+#                     os.remove(path)
+#                 except:
+#                     pass
+#         cv2.destroyAllWindows()
+#         gc.collect()
+
 async def process_single_file(update, context, user_id, brand_text, message):
     file = None
     ext = ""
@@ -195,10 +243,35 @@ async def process_single_file(update, context, user_id, brand_text, message):
             pixel_perfect_removal(input_path, output_path, brand_text)
             await status_msg.delete()
             await message.reply_photo(photo=open(output_path, 'rb'))
+            
         else:
-            # Video progress simulation (just a status update)
-            await status_msg.edit_text(f"⏳ **Processing Video...**\n🎬 Detecting Watermark ..")
-            pixel_perfect_video_removal(input_path, output_path, brand_text)
+            # Get the command list from the video function
+            cmd = pixel_perfect_video_removal(input_path, output_path, brand_text)
+            
+            # Start the timer and FFmpeg process ASYNCHRONOUSLY
+            start_time = time.time()
+            await status_msg.edit_text(f"⏳ **Processing Video...**\n🎬 Detecting Watermark.. (Elapsed: 0.0s)")
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            
+            # 🔄 LIVE UPDATES: Update status every 1 second until FFmpeg finishes
+            while process.returncode is None:
+                elapsed = time.time() - start_time
+                await status_msg.edit_text(f"⏳ **Processing Video...**\n🎬 Applying Watermark.. (Elapsed: {elapsed:.1f}s)")
+                await asyncio.sleep(1)
+            
+            # Wait for the process to fully finish and check for errors
+            stdout, stderr = await process.communicate()
+            if process.returncode != 0:
+                raise Exception(stderr.decode())
+            
+            # ✅ FINAL TIME: Show exact processing time
+            final_time = time.time() - start_time
+            await status_msg.edit_text(f"✅ **Processed in {final_time:.2f}s**")
+            await asyncio.sleep(1)  # Let the user read the time
+            
             await status_msg.delete()
             await message.reply_video(video=open(output_path, 'rb'))
             
@@ -458,28 +531,29 @@ def pixel_perfect_video_removal(input_path, output_path, new_text):
     
     cap.release()  # ✅ We are DONE scanning! Now close the file.
 
-    # 3. PASS X, Y, W, H DIRECTLY TO FFMPEG (Native, Super Fast)
-    # drawbox: Black box over the old text.
-    # drawtext: White text over that box, positioned at x, y.
+    # 3. PASS X, Y, W, H DIRECTLY TO FFMPEG
     filter_complex = (
         f"[0:v]drawbox=w={w_box}:h={h_box}:x={x}:y={y}:color=black:t=fill[erased];"
         f"[erased]drawtext=text='{safe_text}':"
         f"fontcolor=white:fontsize=35:"
         f"box=1:boxcolor=black@0.5:boxborderw=10:"
         f"x={x}:y={y}[out]"
-    )
-     cmd = [
+    )            
+    
+    # ✅ FIXED INDENTATION (Exactly 4 spaces)
+    cmd = [
         "ffmpeg", "-i", input_path,
         "-filter_complex", filter_complex,
         "-map", "[out]",
         "-map", "0:a?",
         "-c:a", "copy",
-        "-preset", "ultrafast",   # ⚡ The biggest speed boost
-        "-crf", "28",             # Speeds up encoding by relaxing quality slightly
+        "-preset", "ultrafast",  # ⚡ Changed to ultrafast
+        "-crf", "28",
         "-y", output_path
     ]
-    subprocess.run(cmd, check=True)
-    gc.collect()
+
+    # ✅ Return the command so the parent function can run it with a Live Timer
+    return cmd
 # ==========================================
 # 🎨 FLASK DASHBOARD
 # ==========================================
